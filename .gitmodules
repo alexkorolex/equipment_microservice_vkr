@@ -1,0 +1,4 @@
+[submodule "src/domains"]
+	path = src/domains
+	url = https://github.com/alexkorolex/grpc_contracts_vkr.git
+	branch = main

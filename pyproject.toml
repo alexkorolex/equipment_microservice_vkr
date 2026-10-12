@@ -1,0 +1,39 @@
+[project]
+name = "equipment-microservice"
+version = "0.1.0"
+description = "Equipment registry, rentals to workers and their daily running costs"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.12",
+    "asyncpg>=0.31.0",
+    "grpcio==1.76.0",
+    "hvac>=2.4.0",
+    "opentelemetry-api>=1.40.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.40.0",
+    "opentelemetry-instrumentation-grpc>=0.61b0",
+    "opentelemetry-sdk>=1.40.0",
+    "protobuf==6.33.1",
+    "python-logging-loki>=0.3.1",
+    "python-dotenv>=1.2.2",
+]
+
+[dependency-groups]
+dev = [
+    "mypy==1.18.2",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "types-protobuf==6.32.1.20251105",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*", "*Tests"]
+python_functions = ["test_*"]
+addopts = "-ra"
+asyncio_mode = "auto"
+markers = [
+    "unit: fast isolated tests",
+    "integration: tests requiring real external services",
+]
