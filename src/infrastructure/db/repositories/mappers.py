@@ -10,6 +10,7 @@ from src.domain.equipment.models import (
     EquipmentSpec,
     EquipmentStatus,
     ExternalStatus,
+    FuelConsumptionMode,
     FuelType,
     Rental,
     RentalStatus,
@@ -21,13 +22,16 @@ EQUIPMENT_COLUMNS = """
     e.id, e.organization_id, e.inventory_number, e.name, e.catalog_item_id,
     e.purchase_price, e.residual_value, e.useful_life_months, e.fuel_type,
     e.fuel_consumption_per_hour, e.daily_overhead, e.currency, e.status, e.version,
-    e.created_at, e.updated_at
+    e.created_at, e.updated_at, e.registration_number, e.vehicle_type_id,
+    e.vehicle_type_name, e.fuel_consumption_mode, e.fuel_consumption_per_100km,
+    e.telematics_object_id
 """
 
 RENTAL_COLUMNS = """
     r.id, r.organization_id, r.equipment_id, r.worker_user_id, r.starts_at, r.ends_at,
     r.returned_at, r.status, r.shift_hours_per_day, r.purpose, r.created_by_user_id,
-    r.external_status, r.external_reference, r.created_at, r.updated_at
+    r.external_status, r.external_reference, r.created_at, r.updated_at,
+    r.odometer_start, r.odometer_end
 """
 
 
@@ -44,6 +48,12 @@ def spec_from_row(row: Row) -> EquipmentSpec:
         fuel_consumption_per_hour=row["fuel_consumption_per_hour"],
         daily_overhead=row["daily_overhead"],
         currency=str(row["currency"]).strip(),
+        registration_number=row["registration_number"],
+        vehicle_type_id=row["vehicle_type_id"],
+        vehicle_type_name=row["vehicle_type_name"],
+        fuel_consumption_mode=FuelConsumptionMode(row["fuel_consumption_mode"]),
+        fuel_consumption_per_100km=row["fuel_consumption_per_100km"],
+        telematics_object_id=row["telematics_object_id"],
     )
 
 
@@ -75,6 +85,8 @@ def rental_from_row(row: Row) -> Rental:
         external_reference=row["external_reference"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        odometer_start=row["odometer_start"],
+        odometer_end=row["odometer_end"],
     )
 
 

@@ -12,9 +12,11 @@ from src.application.equipment.accrual_service import AccrualService
 from src.application.equipment.equipment_service import EquipmentService
 from src.application.equipment.rental_service import RentalService
 from src.application.equipment.submission_service import SubmissionService
+from src.application.equipment.telematics_service import TelematicsService
 from src.domains.equipment import equipment_pb2_grpc
 from src.entrypoints.gRPC.equipment import EquipmentGrpcService, RentalGrpcService
 from src.entrypoints.gRPC.requests import RequestMapper
+from src.entrypoints.gRPC.telematics import TelematicsGrpcService
 from src.etc.logging.base import LoggingConfigurator
 from src.etc.opentelemetry.base import TelemetryConfigurator
 from src.etc.settings_microservice.base import Settings, SettingsLoader
@@ -25,8 +27,11 @@ from src.infrastructure.db.repositories.costs import PostgresCostRepository
 from src.infrastructure.db.repositories.equipment import PostgresEquipmentRepository
 from src.infrastructure.db.repositories.outbox import PostgresOutboxRepository
 from src.infrastructure.db.repositories.rentals import PostgresRentalRepository
+from src.infrastructure.db.repositories.telematics import PostgresTelematicsAccounts
 from src.infrastructure.grpc.exceptions.base import ExceptionStatusMapper
 from src.infrastructure.grpc.interceptors.base import ErrorInterceptor
+from src.infrastructure.telematics.crypto import SecretBox
+from src.infrastructure.telematics.fortmonitor import FortMonitorProvider
 from src.infrastructure.workers import PeriodicWorker
 
 
@@ -42,8 +47,9 @@ class EquipmentApplication:
         async with Database(self._settings, self._logger) as database, aiohttp.ClientSession() as session:
             pool = self._required_pool(database)
             cost_system = HttpCostSystem(self._settings.cost_system, session, self._logger)
-            server = self._grpc_server(pool)
-            workers = self._worker_tasks(pool, cost_system)
+            telematics = self._telematics(pool)
+            server = self._grpc_server(pool, telematics)
+            workers = self._worker_tasks(pool, cost_system, telematics)
             self._install_signal_handlers(server)
             await server.start()
             self._logger.info("Equipment service started", extra={"port": self._settings.port})
@@ -52,7 +58,20 @@ class EquipmentApplication:
             finally:
                 await self._shutdown(server, workers)
 
-    def _grpc_server(self, pool: asyncpg.Pool) -> grpc.aio.Server:
+    def _telematics(self, pool: asyncpg.Pool) -> TelematicsService:
+        settings = self._settings.telematics
+        if settings.encryption_key is None:
+            self._logger.warning("TELEMATICS_ENCRYPTION_KEY is not set: FortMonitor is disabled")
+        provider = FortMonitorProvider(
+            settings.default_base_url, settings.timeout_seconds, self._logger,
+            settings.track_distance_unit,
+        )
+        return TelematicsService(
+            PostgresTelematicsAccounts(pool), provider, SecretBox(settings.encryption_key),
+            PostgresEquipmentRepository(pool), self._logger,
+        )
+
+    def _grpc_server(self, pool: asyncpg.Pool, telematics: TelematicsService) -> grpc.aio.Server:
         requests = RequestMapper(self._settings.default_shift_hours)
         rentals = RentalService(
             PostgresRentalRepository(pool), PostgresCostRepository(pool), self._clock, self._logger
@@ -70,10 +89,13 @@ class EquipmentApplication:
         equipment_pb2_grpc.add_RentalServiceServicer_to_server(
             RentalGrpcService(rentals, requests), server
         )
+        equipment_pb2_grpc.add_TelematicsServiceServicer_to_server(
+            TelematicsGrpcService(telematics), server
+        )
         return server
 
     def _worker_tasks(
-        self, pool: asyncpg.Pool, cost_system: HttpCostSystem
+        self, pool: asyncpg.Pool, cost_system: HttpCostSystem, telematics: TelematicsService
     ) -> tuple[asyncio.Task[None], ...]:
         settings = self._settings.workers
         submission = SubmissionService(
@@ -82,7 +104,7 @@ class EquipmentApplication:
         )
         accrual = AccrualService(
             PostgresCostRepository(pool), cost_system, self._clock, self._logger,
-            settings.batch_size,
+            settings.batch_size, mileage=telematics,
         )
         workers = (
             PeriodicWorker("rental-submission", submission.run_once,

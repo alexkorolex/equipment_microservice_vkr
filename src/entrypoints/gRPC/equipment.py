@@ -10,6 +10,7 @@ from src.entrypoints.gRPC.requests import (
     RequestMapper,
     enum,
     identifier,
+    optional_decimal,
     optional_timestamp,
 )
 
@@ -85,6 +86,7 @@ class RentalGrpcService(pb2_grpc.RentalServiceServicer):
             identifier(request.id, "id"),
             optional_timestamp(request, "returnedAt"),
             request.actorUserId,
+            optional_decimal(request, "odometerEnd"),
         )
         return pb2.RentalResponse(data=responses.rental(rental))
 

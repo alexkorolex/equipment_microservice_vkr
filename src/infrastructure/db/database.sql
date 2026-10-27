@@ -27,6 +27,26 @@ CREATE TABLE IF NOT EXISTS equipment.equipment (
 CREATE INDEX IF NOT EXISTS equipment_organization_idx
     ON equipment.equipment (organization_id, inventory_number);
 
+-- Plate, vehicle type, fuel by mileage and the FortMonitor link (added later).
+ALTER TABLE equipment.equipment ADD COLUMN IF NOT EXISTS registration_number TEXT NULL;
+ALTER TABLE equipment.equipment ADD COLUMN IF NOT EXISTS vehicle_type_id BIGINT NULL;
+ALTER TABLE equipment.equipment
+    ADD COLUMN IF NOT EXISTS vehicle_type_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE equipment.equipment
+    ADD COLUMN IF NOT EXISTS fuel_consumption_mode TEXT NOT NULL DEFAULT 'per_hour'
+        CHECK (fuel_consumption_mode IN ('per_hour', 'per_100km'));
+ALTER TABLE equipment.equipment
+    ADD COLUMN IF NOT EXISTS fuel_consumption_per_100km NUMERIC(12, 3) NOT NULL DEFAULT 0
+        CHECK (fuel_consumption_per_100km >= 0);
+ALTER TABLE equipment.equipment ADD COLUMN IF NOT EXISTS telematics_object_id BIGINT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS equipment_registration_number_unique
+    ON equipment.equipment (organization_id, registration_number)
+    WHERE registration_number IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS equipment_telematics_object_unique
+    ON equipment.equipment (organization_id, telematics_object_id)
+    WHERE telematics_object_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS equipment.rentals (
     id UUID PRIMARY KEY,
     organization_id BIGINT NOT NULL,
@@ -50,6 +70,17 @@ CREATE TABLE IF NOT EXISTS equipment.rentals (
     CONSTRAINT rentals_return_after_start CHECK (returned_at IS NULL OR returned_at >= starts_at),
     CONSTRAINT rentals_returned_has_time CHECK ((status = 'returned') = (returned_at IS NOT NULL))
 );
+
+-- Odometer readings, km: the mileage of per_100km equipment without a tracker.
+ALTER TABLE equipment.rentals ADD COLUMN IF NOT EXISTS odometer_start NUMERIC(12, 1) NULL
+    CHECK (odometer_start >= 0);
+ALTER TABLE equipment.rentals ADD COLUMN IF NOT EXISTS odometer_end NUMERIC(12, 1) NULL
+    CHECK (odometer_end >= 0);
+DO $$ BEGIN
+    ALTER TABLE equipment.rentals ADD CONSTRAINT rentals_odometer_forward
+        CHECK (odometer_end IS NULL OR odometer_start IS NULL OR odometer_end >= odometer_start);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 CREATE INDEX IF NOT EXISTS rentals_equipment_idx
     ON equipment.rentals (equipment_id, status);
@@ -106,3 +137,14 @@ CREATE INDEX IF NOT EXISTS outbox_pending_idx
     WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS outbox_rental_idx
     ON equipment.outbox (rental_id, created_at);
+
+-- The organization's FortMonitor account; the password is encrypted by the service.
+CREATE TABLE IF NOT EXISTS equipment.telematics_accounts (
+    organization_id BIGINT PRIMARY KEY,
+    provider TEXT NOT NULL DEFAULT 'fortmonitor' CHECK (provider IN ('fortmonitor')),
+    login TEXT NOT NULL,
+    password_encrypted TEXT NOT NULL,
+    base_url TEXT NOT NULL DEFAULT '',
+    updated_by_user_id BIGINT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

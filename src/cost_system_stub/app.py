@@ -73,8 +73,12 @@ class CostSystemStub:
         start = datetime.fromisoformat(body["periodStart"])
         end = datetime.fromisoformat(body["periodEnd"])
         hours = Decimal((end - start).total_seconds()) / Decimal(3600)
+        mileage = body.get("mileageKm")
         lines = self._calculator.calculate(
-            hours, Decimal(body["shiftHoursPerDay"]), body["equipment"]
+            hours,
+            Decimal(body["shiftHoursPerDay"]),
+            body["equipment"],
+            Decimal(mileage) if mileage is not None else None,
         )
         calculation_id = f"CALC-{uuid4().hex[:12].upper()}"
         self._logger.info(

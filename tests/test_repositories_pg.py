@@ -125,11 +125,11 @@ async def test_return_and_cancel_rules(pool: asyncpg.Pool) -> None:
     with pytest.raises(RentalStateError):
         await rentals.cancel(15, rental.id, now=at(2))
     with pytest.raises(RentalStateError):
-        await rentals.return_equipment(15, rental.id, at(1, 20))
-    returned = await rentals.return_equipment(15, rental.id, at(3, 9))
+        await rentals.return_equipment(15, rental.id, at(1, 20), None)
+    returned = await rentals.return_equipment(15, rental.id, at(3, 9), None)
     assert returned.status is RentalStatus.RETURNED and returned.returned_at == at(3, 9)
     with pytest.raises(RentalStateError):
-        await rentals.return_equipment(15, rental.id, at(3, 10))
+        await rentals.return_equipment(15, rental.id, at(3, 10), None)
 
     future = await rentals.open(make_request(equipment.id, starts_at=at(10), ends_at=at(12)), at(3))
     cancelled = await rentals.cancel(15, future.id, now=at(3))
@@ -141,7 +141,7 @@ async def test_outbox_keeps_order_per_rental_and_leases(pool: asyncpg.Pool) -> N
     rentals = PostgresRentalRepository(pool)
     outbox = PostgresOutboxRepository(pool, lease=timedelta(seconds=60))
     rental = await rentals.open(make_request(equipment.id), now=at(1))
-    await rentals.return_equipment(15, rental.id, at(2))
+    await rentals.return_equipment(15, rental.id, at(2), None)
 
     [opened] = await outbox.claim(at(3), 10)
     assert opened.kind is OutboxKind.RENTAL_OPENED

@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
+from decimal import Decimal
 from uuid import UUID
 
 from src.application.equipment.commands import RentalFilter
 from src.application.equipment.ports import Clock, CostRepository, RentalRepository
 from src.domain.equipment.errors import InvalidDataError
-from src.domain.equipment.models import Rental, RentalCosts, RentalRequest, require_aware
+from src.domain.equipment.models import (
+    Rental,
+    RentalCosts,
+    RentalRequest,
+    require_aware,
+    require_odometer,
+)
 
 
 class RentalService:
@@ -45,12 +52,16 @@ class RentalService:
         rental_id: UUID,
         returned_at: datetime | None,
         actor_user_id: int,
+        odometer_end: Decimal | None = None,
     ) -> Rental:
         now = self._clock.now()
         moment = require_aware(returned_at, "returnedAt") if returned_at else now
         if moment > now + self._CLOCK_SKEW:
             raise InvalidDataError("returnedAt must not be in the future")
-        rental = await self._rentals.return_equipment(organization_id, rental_id, min(moment, now))
+        require_odometer(odometer_end, "odometerEnd")
+        rental = await self._rentals.return_equipment(
+            organization_id, rental_id, min(moment, now), odometer_end
+        )
         self._log("Equipment returned", rental, "return_equipment", actor_user_id)
         return rental
 

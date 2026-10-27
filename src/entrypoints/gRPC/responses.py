@@ -46,6 +46,12 @@ def equipment(item: Equipment) -> pb2.Equipment:
         version=item.version,
         createdAt=ts(item.created_at),
         updatedAt=ts(item.updated_at),
+        registrationNumber=spec.registration_number or "",
+        vehicleTypeId=spec.vehicle_type_id or 0,
+        vehicleTypeName=spec.vehicle_type_name,
+        fuelConsumptionMode=spec.fuel_consumption_mode.value,
+        fuelConsumptionPer100Km=str(spec.fuel_consumption_per_100km),
+        telematicsObjectId=spec.telematics_object_id or 0,
     )
     if spec.catalog_item_id is not None:
         message.catalogItemId = spec.catalog_item_id
@@ -72,6 +78,10 @@ def rental(item: Rental) -> pb2.Rental:
         message.returnedAt.CopyFrom(ts(item.returned_at))
     if item.external_reference is not None:
         message.externalReference = item.external_reference
+    if item.odometer_start is not None:
+        message.odometerStart = quantity(item.odometer_start)
+    if item.odometer_end is not None:
+        message.odometerEnd = quantity(item.odometer_end)
     return message
 
 

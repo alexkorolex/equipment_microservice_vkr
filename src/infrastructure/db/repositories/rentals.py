@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -10,6 +11,7 @@ import asyncpg
 from src.application.equipment.commands import OutboxKind, RentalFilter
 from src.domain.equipment.errors import (
     EquipmentUnavailableError,
+    InvalidDataError,
     NotFoundError,
     RentalStateError,
 )
@@ -25,6 +27,7 @@ from src.infrastructure.db.repositories.mappers import (
     Row,
     equipment_from_row,
     rental_from_row,
+    spec_from_row,
 )
 
 _SELECT = f"SELECT {RENTAL_COLUMNS} FROM equipment.rentals r"
@@ -46,6 +49,8 @@ class PostgresRentalRepository:
     async def open(self, request: RentalRequest, now: datetime) -> Rental:
         async with self._pool.acquire() as connection, connection.transaction():
             equipment = await self._lock_equipment(connection, request)
+            if spec_from_row(equipment).mileage_from_odometer and request.odometer_start is None:
+                raise InvalidDataError("odometerStart is required: fuel is counted by mileage")
             busy = await connection.fetchval(
                 _OVERLAP, request.equipment_id, request.starts_at, request.ends_at, now
             )
@@ -90,12 +95,17 @@ class PostgresRentalRepository:
         return [rental_from_row(row) for row in rows]
 
     async def return_equipment(
-        self, organization_id: int, rental_id: UUID, returned_at: datetime
+        self,
+        organization_id: int,
+        rental_id: UUID,
+        returned_at: datetime,
+        odometer_end: Decimal | None,
     ) -> Rental:
         async with self._pool.acquire() as connection, connection.transaction():
             rental = await self._lock_open(connection, organization_id, rental_id)
             if returned_at < rental.starts_at:
                 raise RentalStateError("The rental has not started yet: cancel it instead")
+            await self._check_odometer_end(connection, rental, odometer_end)
             accrued_until = await connection.fetchval(
                 "SELECT max(period_end) FROM equipment.cost_accruals WHERE rental_id = $1",
                 rental_id,
@@ -103,7 +113,7 @@ class PostgresRentalRepository:
             if accrued_until is not None and returned_at < accrued_until:
                 raise RentalStateError("Costs are already accrued past this return time")
             updated = await self._set_status(
-                connection, rental_id, RentalStatus.RETURNED, returned_at
+                connection, rental_id, RentalStatus.RETURNED, returned_at, odometer_end
             )
             await self._enqueue(connection, updated, OutboxKind.RENTAL_RETURNED, {
                 **self._rental_payload(updated),
@@ -116,7 +126,9 @@ class PostgresRentalRepository:
             rental = await self._lock_open(connection, organization_id, rental_id)
             if rental.starts_at <= now:
                 raise RentalStateError("The rental has already started: return the equipment")
-            updated = await self._set_status(connection, rental_id, RentalStatus.CANCELLED, None)
+            updated = await self._set_status(
+                connection, rental_id, RentalStatus.CANCELLED, None, None
+            )
             await self._enqueue(
                 connection, updated, OutboxKind.RENTAL_CANCELLED, self._rental_payload(updated)
             )
@@ -141,8 +153,8 @@ class PostgresRentalRepository:
             """
             INSERT INTO equipment.rentals AS r (
                 id, organization_id, equipment_id, worker_user_id, starts_at, ends_at,
-                status, shift_hours_per_day, purpose, created_by_user_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, 'open', $7, $8, $9)
+                status, shift_hours_per_day, purpose, created_by_user_id, odometer_start
+            ) VALUES ($1, $2, $3, $4, $5, $6, 'open', $7, $8, $9, $10)
             RETURNING """
             + RENTAL_COLUMNS,
             self._id_factory(),
@@ -154,6 +166,7 @@ class PostgresRentalRepository:
             request.shift_hours_per_day,
             request.purpose,
             request.created_by_user_id,
+            request.odometer_start,
         )
         return row
 
@@ -174,20 +187,36 @@ class PostgresRentalRepository:
         return rental
 
     @staticmethod
+    async def _check_odometer_end(
+        connection: asyncpg.Connection, rental: Rental, odometer_end: Decimal | None
+    ) -> None:
+        row = await connection.fetchrow(
+            f"SELECT {EQUIPMENT_COLUMNS} FROM equipment.equipment e WHERE e.id = $1",
+            rental.equipment_id,
+        )
+        if spec_from_row(row).mileage_from_odometer and odometer_end is None:
+            raise InvalidDataError("odometerEnd is required: fuel is counted by mileage")
+        start = rental.odometer_start
+        if odometer_end is not None and start is not None and odometer_end < start:
+            raise InvalidDataError("odometerEnd must not be less than odometerStart")
+
+    @staticmethod
     async def _set_status(
         connection: asyncpg.Connection,
         rental_id: UUID,
         status: RentalStatus,
         returned_at: datetime | None,
+        odometer_end: Decimal | None,
     ) -> Rental:
         row = await connection.fetchrow(
             """UPDATE equipment.rentals AS r
-            SET status = $2, returned_at = $3, updated_at = now()
+            SET status = $2, returned_at = $3, odometer_end = $4, updated_at = now()
             WHERE r.id = $1 RETURNING """
             + RENTAL_COLUMNS,
             rental_id,
             status.value,
             returned_at,
+            odometer_end,
         )
         return rental_from_row(row)
 

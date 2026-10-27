@@ -20,3 +20,15 @@ class RentalStateError(EquipmentDomainError):
 
 class VersionConflictError(EquipmentDomainError):
     """``expectedVersion`` does not match the stored version."""
+
+
+class TelematicsNotConfiguredError(EquipmentDomainError):
+    """The organization has no telematics account, or the service has no encryption key."""
+
+
+class TelematicsRejectedError(EquipmentDomainError):
+    """The telematics provider rejected the credentials or the request."""
+
+
+class TelematicsUnavailableError(EquipmentDomainError):
+    """The telematics provider cannot be reached now; the call may be repeated."""

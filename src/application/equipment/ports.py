@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -22,6 +23,13 @@ from src.domain.equipment.models import (
     RentalRequest,
 )
 from src.domain.equipment.periods import AccrualPeriod
+from src.domain.equipment.telematics import (
+    StoredTelematicsAccount,
+    TelematicsAccount,
+    TelematicsCredentials,
+    TelematicsUnit,
+    Track,
+)
 
 
 class Clock(Protocol):
@@ -46,6 +54,16 @@ class EquipmentRepository(Protocol):
     ) -> list[Equipment]: ...
 
 
+class MileageSource(Protocol):
+    """Km a tracked vehicle drove in a period. Raises TelematicsUnavailableError when it
+    may be asked again later, TelematicsNotConfiguredError or TelematicsRejectedError
+    when it cannot answer."""
+
+    async def distance_km(
+        self, organization_id: int, object_id: int, start: datetime, end: datetime
+    ) -> Decimal: ...
+
+
 class RentalRepository(Protocol):
     """Rental changes are atomic with their outbox message for the cost system."""
 
@@ -56,7 +74,11 @@ class RentalRepository(Protocol):
     async def list(self, query: RentalFilter) -> list[Rental]: ...
 
     async def return_equipment(
-        self, organization_id: int, rental_id: UUID, returned_at: datetime
+        self,
+        organization_id: int,
+        rental_id: UUID,
+        returned_at: datetime,
+        odometer_end: Decimal | None,
     ) -> Rental: ...
 
     async def cancel(self, organization_id: int, rental_id: UUID, now: datetime) -> Rental: ...
@@ -100,3 +122,47 @@ class CostSystem(Protocol):
     async def notify_cancel(self, payload: dict[str, Any]) -> dict[str, Any]: ...
 
     async def calculate(self, request: CostCalculationRequest) -> CostCalculation: ...
+
+
+class TelematicsAccountRepository(Protocol):
+    async def get(self, organization_id: int) -> StoredTelematicsAccount | None: ...
+
+    async def save(
+        self,
+        organization_id: int,
+        login: str,
+        password_encrypted: str,
+        base_url: str,
+        actor_user_id: int,
+    ) -> TelematicsAccount: ...
+
+    async def delete(self, organization_id: int) -> None: ...
+
+
+class SecretCipher(Protocol):
+    def encrypt(self, secret: str) -> str: ...
+
+    def decrypt(self, token: str) -> str: ...
+
+
+class TelematicsProvider(Protocol):
+    """FortMonitor. Raises TelematicsRejectedError for bad credentials or requests and
+    TelematicsUnavailableError when it cannot be reached."""
+
+    async def check(self, credentials: TelematicsCredentials) -> None: ...
+
+    async def units(self, credentials: TelematicsCredentials) -> list[TelematicsUnit]: ...
+
+    async def unit(self, credentials: TelematicsCredentials, object_id: int) -> TelematicsUnit: ...
+
+    async def track(
+        self,
+        credentials: TelematicsCredentials,
+        object_id: int,
+        start: datetime,
+        end: datetime,
+    ) -> Track: ...
+
+
+class LinkedEquipment(Protocol):
+    async def linked(self, organization_id: int) -> dict[int, UUID]: ...

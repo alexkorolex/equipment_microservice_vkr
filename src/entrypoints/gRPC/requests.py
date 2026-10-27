@@ -15,9 +15,11 @@ from src.domain.equipment.errors import InvalidDataError
 from src.domain.equipment.models import (
     EquipmentSpec,
     EquipmentStatus,
+    FuelConsumptionMode,
     FuelType,
     RentalRequest,
     RentalStatus,
+    normalize_plate,
 )
 from src.domains.equipment import equipment_pb2 as pb2
 
@@ -46,6 +48,17 @@ class RequestMapper:
             ),
             daily_overhead=decimal(request.dailyOverhead or "0", "dailyOverhead"),
             currency=(request.currency or "RUB").upper(),
+            registration_number=normalize_plate(request.registrationNumber),
+            vehicle_type_id=request.vehicleTypeId or None,
+            vehicle_type_name=request.vehicleTypeName.strip() if request.vehicleTypeId else "",
+            fuel_consumption_mode=enum(
+                FuelConsumptionMode, request.fuelConsumptionMode or "per_hour",
+                "fuelConsumptionMode",
+            ),
+            fuel_consumption_per_100km=decimal(
+                request.fuelConsumptionPer100Km or "0", "fuelConsumptionPer100Km"
+            ),
+            telematics_object_id=request.telematicsObjectId or None,
         )
 
     def changes(self, request: pb2.UpdateEquipmentRequest) -> EquipmentChanges:
@@ -56,8 +69,13 @@ class RequestMapper:
 
         decimals = {
             name: decimal(present(name), name) if present(name) is not None else None
-            for name in ("purchasePrice", "residualValue", "fuelConsumptionPerHour", "dailyOverhead")
+            for name in (
+                "purchasePrice", "residualValue", "fuelConsumptionPerHour", "dailyOverhead",
+                "fuelConsumptionPer100Km",
+            )
         }
+        mode = present("fuelConsumptionMode")
+        plate = present("registrationNumber")
         return EquipmentChanges(
             name=present("name"),
             catalog_item_id=present("catalogItemId"),
@@ -68,6 +86,15 @@ class RequestMapper:
             fuel_consumption_per_hour=decimals["fuelConsumptionPerHour"],
             daily_overhead=decimals["dailyOverhead"],
             status=enum(EquipmentStatus, present("status"), "status") if present("status") else None,
+            # "" removes the number.
+            registration_number=(normalize_plate(plate) or "") if plate is not None else None,
+            vehicle_type_id=present("vehicleTypeId"),
+            vehicle_type_name=present("vehicleTypeName"),
+            fuel_consumption_mode=(
+                enum(FuelConsumptionMode, mode, "fuelConsumptionMode") if mode else None
+            ),
+            fuel_consumption_per_100km=decimals["fuelConsumptionPer100Km"],
+            telematics_object_id=present("telematicsObjectId"),
         )
 
     def rental(self, request: pb2.CreateRentalRequest) -> RentalRequest:
@@ -81,6 +108,7 @@ class RequestMapper:
             shift_hours_per_day=decimal(shift, "shiftHoursPerDay") if shift else self._default_shift_hours,
             purpose=request.purpose.strip(),
             created_by_user_id=request.createdByUserId,
+            odometer_start=optional_decimal(request, "odometerStart"),
         )
 
     def rental_filter(self, request: pb2.ListRentalsRequest) -> RentalFilter:
@@ -115,6 +143,12 @@ def decimal(value: str | None, name: str) -> Decimal:
     if not result.is_finite():
         raise InvalidDataError(f"{name} must be a finite number")
     return result
+
+
+def optional_decimal(message: Message, name: str) -> Decimal | None:
+    if not message.HasField(name) or not getattr(message, name).strip():
+        return None
+    return decimal(getattr(message, name), name)
 
 
 def identifier(value: str, name: str) -> UUID:

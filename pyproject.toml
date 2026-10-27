@@ -16,6 +16,8 @@ dependencies = [
     "protobuf==6.33.1",
     "python-logging-loki>=0.3.1",
     "python-dotenv>=1.2.2",
+    "fort-monitor-api==0.1.1",
+    "cryptography>=44",
 ]
 
 [dependency-groups]

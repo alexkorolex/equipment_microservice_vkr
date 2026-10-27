@@ -25,6 +25,13 @@ class FuelType(StrEnum):
     NONE = "none"
 
 
+class FuelConsumptionMode(StrEnum):
+    """How fuel is counted: fixed litres per engine hour, or litres per 100 km driven."""
+
+    PER_HOUR = "per_hour"
+    PER_100KM = "per_100km"
+
+
 class RentalStatus(StrEnum):
     OPEN = "open"
     RETURNED = "returned"
@@ -60,8 +67,16 @@ class EquipmentSpec:
     fuel_consumption_per_hour: Decimal
     daily_overhead: Decimal
     currency: str
+    registration_number: str | None = None
+    vehicle_type_id: int | None = None
+    vehicle_type_name: str = ""
+    fuel_consumption_mode: FuelConsumptionMode = FuelConsumptionMode.PER_HOUR
+    fuel_consumption_per_100km: Decimal = Decimal(0)
+    telematics_object_id: int | None = None
 
     _CURRENCY: ClassVar[re.Pattern[str]] = re.compile(r"^[A-Z]{3}$")
+    # Russian plates and trailer/special machinery numbers: letters, digits, spaces, dashes.
+    _PLATE: ClassVar[re.Pattern[str]] = re.compile(r"^[0-9A-ZА-ЯЁ][0-9A-ZА-ЯЁ -]{0,19}$")
 
     def __post_init__(self) -> None:
         if not self.inventory_number.strip() or not self.name.strip():
@@ -76,6 +91,34 @@ class EquipmentSpec:
             raise InvalidDataError("Fuel consumption and overhead must not be negative")
         if not self._CURRENCY.match(self.currency):
             raise InvalidDataError("currency must be an ISO 4217 code, e.g. RUB")
+        if self.registration_number is not None and not self._PLATE.match(
+            self.registration_number
+        ):
+            raise InvalidDataError("registrationNumber: up to 20 letters, digits, spaces, dashes")
+        if self.vehicle_type_id is not None and self.vehicle_type_id < 1:
+            raise InvalidDataError("vehicleTypeId must be positive")
+        if len(self.vehicle_type_name) > 300:
+            raise InvalidDataError("vehicleTypeName is too long")
+        if self.fuel_consumption_per_100km < 0:
+            raise InvalidDataError("fuelConsumptionPer100Km must not be negative")
+        if self.telematics_object_id is not None and self.telematics_object_id < 1:
+            raise InvalidDataError("telematicsObjectId must be positive")
+
+    @property
+    def mileage_from_odometer(self) -> bool:
+        """Fuel by mileage, and no tracker to measure it: readings come with the rental."""
+        return (
+            self.fuel_consumption_mode is FuelConsumptionMode.PER_100KM
+            and self.telematics_object_id is None
+        )
+
+
+def normalize_plate(value: str | None) -> str | None:
+    """Upper case without repeated spaces; an empty number is no number."""
+    if value is None:
+        return None
+    plate = " ".join(value.upper().split())
+    return plate or None
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +141,7 @@ class RentalRequest:
     shift_hours_per_day: Decimal
     purpose: str
     created_by_user_id: int
+    odometer_start: Decimal | None = None
 
     def __post_init__(self) -> None:
         require_aware(self.starts_at, "startsAt")
@@ -110,6 +154,12 @@ class RentalRequest:
             raise InvalidDataError("workerUserId is required")
         if len(self.purpose) > 1000:
             raise InvalidDataError("purpose is too long")
+        require_odometer(self.odometer_start, "odometerStart")
+
+
+def require_odometer(value: Decimal | None, name: str) -> None:
+    if value is not None and not Decimal(0) <= value < Decimal(10) ** 9:
+        raise InvalidDataError(f"{name} must be a reading in km")
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +179,8 @@ class Rental:
     external_reference: str | None
     created_at: datetime
     updated_at: datetime
+    odometer_start: Decimal | None = None
+    odometer_end: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)

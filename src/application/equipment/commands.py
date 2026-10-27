@@ -7,7 +7,13 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from src.domain.equipment.models import EquipmentSpec, EquipmentStatus, FuelType, RentalStatus
+from src.domain.equipment.models import (
+    EquipmentSpec,
+    EquipmentStatus,
+    FuelConsumptionMode,
+    FuelType,
+    RentalStatus,
+)
 from src.domain.equipment.periods import AccrualPeriod
 
 
@@ -24,9 +30,16 @@ class EquipmentChanges:
     fuel_consumption_per_hour: Decimal | None = None
     daily_overhead: Decimal | None = None
     status: EquipmentStatus | None = None
+    registration_number: str | None = None
+    vehicle_type_id: int | None = None
+    vehicle_type_name: str | None = None
+    fuel_consumption_mode: FuelConsumptionMode | None = None
+    fuel_consumption_per_100km: Decimal | None = None
+    telematics_object_id: int | None = None
 
     def spec_changes(self) -> dict[str, Any]:
-        """Changed spec fields; an empty ``catalog_item_id`` unlinks the catalog item."""
+        """Changed spec fields. Empty ``catalog_item_id`` or ``registration_number`` and a
+        zero ``vehicle_type_id`` or ``telematics_object_id`` remove the value."""
         changes: dict[str, Any] = {
             name: value
             for name, value in (
@@ -38,11 +51,25 @@ class EquipmentChanges:
                 ("fuel_type", self.fuel_type),
                 ("fuel_consumption_per_hour", self.fuel_consumption_per_hour),
                 ("daily_overhead", self.daily_overhead),
+                ("registration_number", self.registration_number),
+                ("vehicle_type_id", self.vehicle_type_id),
+                ("vehicle_type_name", self.vehicle_type_name),
+                ("fuel_consumption_mode", self.fuel_consumption_mode),
+                ("fuel_consumption_per_100km", self.fuel_consumption_per_100km),
+                ("telematics_object_id", self.telematics_object_id),
             )
             if value is not None
         }
-        if changes.get("catalog_item_id") == "":
-            changes["catalog_item_id"] = None
+        for name, empty in (
+            ("catalog_item_id", ""),
+            ("registration_number", ""),
+            ("vehicle_type_id", 0),
+            ("telematics_object_id", 0),
+        ):
+            if changes.get(name) == empty:
+                changes[name] = None
+        if "vehicle_type_id" in changes and changes["vehicle_type_id"] is None:
+            changes["vehicle_type_name"] = ""
         return changes
 
 
@@ -90,6 +117,8 @@ class AccrualCandidate:
     external_reference: str | None
     last_accrued_day: date | None
     spec: EquipmentSpec
+    odometer_start: Decimal | None = None
+    odometer_end: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +128,8 @@ class CostCalculationRequest:
     period: AccrualPeriod
     shift_hours_per_day: Decimal
     spec: EquipmentSpec
+    # Km driven in the period, for per_100km equipment.
+    mileage_km: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)

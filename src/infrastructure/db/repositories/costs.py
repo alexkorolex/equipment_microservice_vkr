@@ -21,13 +21,16 @@ from src.infrastructure.db.repositories.mappers import (
 _CANDIDATES = f"""
     SELECT {EQUIPMENT_COLUMNS},
         r.id AS rental_id, r.starts_at, r.returned_at, r.shift_hours_per_day,
-        r.external_reference,
+        r.external_reference, r.odometer_start, r.odometer_end,
         (SELECT max(a.accrual_date) FROM equipment.cost_accruals a
          WHERE a.rental_id = r.id) AS last_accrued_day
     FROM equipment.rentals r
     JOIN equipment.equipment e ON e.id = r.equipment_id
     WHERE r.status IN ('open', 'returned') AND NOT r.costs_complete
       AND r.external_status = 'submitted' AND r.starts_at < $1
+      -- Mileage by odometer is known only when the equipment is back.
+      AND NOT (e.fuel_consumption_mode = 'per_100km' AND e.telematics_object_id IS NULL
+               AND r.returned_at IS NULL)
     ORDER BY last_accrued_day NULLS FIRST, r.starts_at
     LIMIT $2
 """
@@ -74,6 +77,8 @@ class PostgresCostRepository:
                 external_reference=row["external_reference"],
                 last_accrued_day=row["last_accrued_day"],
                 spec=spec_from_row(row),
+                odometer_start=row["odometer_start"],
+                odometer_end=row["odometer_end"],
             )
             for row in rows
         ]

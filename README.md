@@ -38,6 +38,32 @@ AccrualService (воркер)     завершённые сутки → POST /v1
   (`externalStatus = submitted`). Когда все сутки возвращённой аренды начислены,
   расходы помечаются `complete`.
 - Все запросы ограничены `organizationId`; чужой ресурс — `NOT_FOUND`.
+- Госномер (`registrationNumber`) приводится к верхнему регистру и уникален в
+  организации; тип ТС (`vehicleTypeId`, `vehicleTypeName`) — категория каталога
+  ReviewPlatform с флажком «Тип техники для CRM», название подставляет Gateway.
+- Расход топлива: `fuelConsumptionMode = per_hour` — фиксированный `fuelConsumptionPerHour`
+  на моточас смены; `per_100km` — `fuelConsumptionPer100Km` на пробег. Пробег берётся из
+  трека FortMonitor, если техника привязана (`telematicsObjectId`), иначе из одометра:
+  `odometerStart` обязателен при выдаче, `odometerEnd` (не меньше начального) — при
+  возврате, а километры делятся по суткам пропорционально времени. Сутки без известного
+  пробега не начисляются, пока он не появится.
+
+## FortMonitor
+
+`TelematicsService` (gRPC): компания (владелец, проверяет Gateway) сохраняет логин и
+пароль API FortMonitor (`fort-monitor-api`), сервис сначала проверяет их входом, затем
+хранит пароль зашифрованным (Fernet, `TELEMATICS_ENCRYPTION_KEY`; без ключа функция
+выключена — `FAILED_PRECONDITION`). Дальше доступны объекты аккаунта с координатами,
+скоростью и датчиками, привязка к технике CRM и трек за период до 31 дня с пробегом.
+
+| Переменная | По умолчанию | Что |
+| --- | --- | --- |
+| `TELEMATICS_ENCRYPTION_KEY` | — | ключ Fernet для паролей |
+| `FORTMONITOR_BASE_URL` | `https://fort.psmgroup.ru/api/integration/v1/` | адрес API, если у компании не указан свой |
+| `FORTMONITOR_TIMEOUT_SECONDS` | `20` | таймаут запроса |
+| `FORTMONITOR_TRACK_DISTANCE_UNIT` | `km` | единица поля `dst` точки трека (`km` или `m`) |
+
+Отказ FortMonitor во входе — `INVALID_ARGUMENT`, недоступность — `UNAVAILABLE`.
 
 ## Внешняя система (HTTP API)
 
@@ -50,7 +76,7 @@ AccrualService (воркер)     завершённые сутки → POST /v1
 | `POST /v1/rentals` | `rentalId`, `organizationId`, `workerUserId`, `startsAt`, `endsAt`, `shiftHoursPerDay`, `purpose`, `equipment{id, inventoryNumber, name, catalogItemId}` | `{"reference": "..."}` |
 | `POST /v1/rentals/{rentalId}/return` | то же + `returnedAt` | любой JSON |
 | `POST /v1/rentals/{rentalId}/cancel` | то же | любой JSON |
-| `POST /v1/cost-calculations` | `rentalId`, `externalReference`, `accrualDate`, `periodStart`, `periodEnd`, `shiftHoursPerDay`, `equipment{purchasePrice, residualValue, usefulLifeMonths, fuelType, fuelConsumptionPerHour, dailyOverhead, currency, ...}` | `{"calculationId", "currency", "lines": [{"costType", "amount", "quantity"?, "unit"?, "description"?}]}` |
+| `POST /v1/cost-calculations` | `rentalId`, `externalReference`, `accrualDate`, `periodStart`, `periodEnd`, `shiftHoursPerDay`, `mileageKm` (для `per_100km`), `equipment{fuelConsumptionMode, fuelConsumptionPer100Km, registrationNumber, purchasePrice, residualValue, usefulLifeMonths, fuelType, fuelConsumptionPerHour, dailyOverhead, currency, ...}` | `{"calculationId", "currency", "lines": [{"costType", "amount", "quantity"?, "unit"?, "description"?}]}` |
 
 Расчёт идёт с заголовком `Idempotency-Key: <rentalId>:<accrualDate>`. Деньги — строки.
 
@@ -62,7 +88,8 @@ AccrualService (воркер)     завершённые сутки → POST /v1
 
 Формулы (`src/cost_system_stub/calculator.py`):
 - топливо = моточасы × расход в час × цена (`STUB_FUEL_PRICES`); моточасы — смена
-  `shiftHoursPerDay`, пропорционально длине периода;
+  `shiftHoursPerDay`, пропорционально длине периода; для `per_100km` — `mileageKm` ×
+  расход на 100 км / 100 × цена;
 - амортизация = (стоимость − остаточная) / срок в месяцах / 30.4375 × доля суток;
 - накладные = `dailyOverhead` × доля суток.
 

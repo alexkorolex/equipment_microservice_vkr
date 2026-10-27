@@ -100,6 +100,7 @@ class HttpCostSystem:
             "periodStart": request.period.start.isoformat(),
             "periodEnd": request.period.end.isoformat(),
             "shiftHoursPerDay": str(request.shift_hours_per_day),
+            "mileageKm": str(request.mileage_km) if request.mileage_km is not None else None,
             "equipment": {
                 "inventoryNumber": spec.inventory_number,
                 "name": spec.name,
@@ -109,6 +110,9 @@ class HttpCostSystem:
                 "usefulLifeMonths": spec.useful_life_months,
                 "fuelType": spec.fuel_type.value,
                 "fuelConsumptionPerHour": str(spec.fuel_consumption_per_hour),
+                "fuelConsumptionMode": spec.fuel_consumption_mode.value,
+                "fuelConsumptionPer100Km": str(spec.fuel_consumption_per_100km),
+                "registrationNumber": spec.registration_number,
                 "dailyOverhead": str(spec.daily_overhead),
                 "currency": spec.currency,
             },

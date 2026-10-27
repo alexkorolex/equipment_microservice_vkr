@@ -31,6 +31,17 @@ class WorkerSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class TelematicsSettings:
+    """FortMonitor access; without an encryption key telematics stays off."""
+
+    encryption_key: str | None
+    default_base_url: str
+    timeout_seconds: float
+    # Unit FortMonitor reports track distances in: km or m.
+    track_distance_unit: str = "km"
+
+
+@dataclass(frozen=True, slots=True)
 class Settings:
     port: int
     debug: bool
@@ -46,6 +57,7 @@ class Settings:
     default_shift_hours: Decimal
     cost_system: CostSystemSettings
     workers: WorkerSettings
+    telematics: TelematicsSettings
 
 
 class SettingsLoader:
@@ -69,6 +81,7 @@ class SettingsLoader:
             default_shift_hours=self._shift_hours(source),
             cost_system=self._cost_system(source),
             workers=self._workers(source),
+            telematics=self._telematics(source),
         )
 
     def _secrets(self) -> dict[str, object]:
@@ -96,6 +109,22 @@ class SettingsLoader:
         )
         if settings.timeout_seconds <= 0:
             raise ConfigurationError("COST_SYSTEM_TIMEOUT_SECONDS must be positive")
+        return settings
+
+    @staticmethod
+    def _telematics(source: ConfigSource) -> TelematicsSettings:
+        settings = TelematicsSettings(
+            encryption_key=source.optional("TELEMATICS_ENCRYPTION_KEY"),
+            default_base_url=source.value(
+                "FORTMONITOR_BASE_URL", "https://fort.psmgroup.ru/api/integration/v1/"
+            ),
+            timeout_seconds=source.number("FORTMONITOR_TIMEOUT_SECONDS", 20.0),
+            track_distance_unit=source.value("FORTMONITOR_TRACK_DISTANCE_UNIT", "km"),
+        )
+        if settings.timeout_seconds <= 0:
+            raise ConfigurationError("FORTMONITOR_TIMEOUT_SECONDS must be positive")
+        if settings.track_distance_unit not in {"km", "m"}:
+            raise ConfigurationError("FORTMONITOR_TRACK_DISTANCE_UNIT must be km or m")
         return settings
 
     @staticmethod

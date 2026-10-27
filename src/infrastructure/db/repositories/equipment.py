@@ -20,17 +20,16 @@ class PostgresEquipmentRepository:
         self._id_factory = id_factory
 
     async def create(self, spec: EquipmentSpec, created_by_user_id: int) -> Equipment:
+        values = self._spec_values(spec)
+        columns = ", ".join(values)
+        placeholders = ", ".join(f"${index}" for index in range(2, len(values) + 2))
         row = await self._pool.fetchrow(
-            """
-            INSERT INTO equipment.equipment AS e (
-                id, organization_id, inventory_number, name, catalog_item_id,
-                purchase_price, residual_value, useful_life_months, fuel_type,
-                fuel_consumption_per_hour, daily_overhead, currency, created_by_user_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-            RETURNING """
-            + EQUIPMENT_COLUMNS,
+            f"""
+            INSERT INTO equipment.equipment AS e (id, {columns}, created_by_user_id)
+            VALUES ($1, {placeholders}, ${len(values) + 2})
+            RETURNING {EQUIPMENT_COLUMNS}""",
             self._id_factory(),
-            *self._spec_values(spec),
+            *values.values(),
             created_by_user_id,
         )
         return equipment_from_row(row)
@@ -79,19 +78,25 @@ class PostgresEquipmentRepository:
         spec: EquipmentSpec,
         status: EquipmentStatus,
     ) -> Equipment:
+        # The organization, the inventory number and the currency never change.
+        values = {
+            name: value
+            for name, value in self._spec_values(spec).items()
+            if name not in {"organization_id", "inventory_number", "currency"}
+        }
+        values["status"] = status.value
+        assignments = ", ".join(
+            f"{name} = ${index}" for index, name in enumerate(values, start=3)
+        )
         row = await connection.fetchrow(
-            """
+            f"""
             UPDATE equipment.equipment AS e SET
-                name = $3, catalog_item_id = $4, purchase_price = $5, residual_value = $6,
-                useful_life_months = $7, fuel_type = $8, fuel_consumption_per_hour = $9,
-                daily_overhead = $10, status = $11, version = e.version + 1, updated_at = now()
+                {assignments}, version = e.version + 1, updated_at = now()
             WHERE e.id = $1 AND e.organization_id = $2
-            RETURNING """
-            + EQUIPMENT_COLUMNS,
+            RETURNING {EQUIPMENT_COLUMNS}""",
             equipment_id,
-            *self._spec_values(spec)[:1],
-            *self._spec_values(spec)[2:-1],
-            status.value,
+            spec.organization_id,
+            *values.values(),
         )
         return equipment_from_row(row)
 
@@ -107,19 +112,34 @@ class PostgresEquipmentRepository:
         )
         return [equipment_from_row(row) for row in rows]
 
-    @staticmethod
-    def _spec_values(spec: EquipmentSpec) -> tuple[object, ...]:
-        """Values in column order, from organization_id to currency."""
-        return (
-            spec.organization_id,
-            spec.inventory_number,
-            spec.name,
-            spec.catalog_item_id,
-            spec.purchase_price,
-            spec.residual_value,
-            spec.useful_life_months,
-            spec.fuel_type.value,
-            spec.fuel_consumption_per_hour,
-            spec.daily_overhead,
-            spec.currency,
+    async def linked(self, organization_id: int) -> dict[int, UUID]:
+        """Equipment by the FortMonitor object it is tracked by."""
+        rows = await self._pool.fetch(
+            """SELECT telematics_object_id, id FROM equipment.equipment
+            WHERE organization_id = $1 AND telematics_object_id IS NOT NULL""",
+            organization_id,
         )
+        return {int(row["telematics_object_id"]): row["id"] for row in rows}
+
+    @staticmethod
+    def _spec_values(spec: EquipmentSpec) -> dict[str, object]:
+        """Column values of the spec, in column order."""
+        return {
+            "organization_id": spec.organization_id,
+            "inventory_number": spec.inventory_number,
+            "name": spec.name,
+            "catalog_item_id": spec.catalog_item_id,
+            "purchase_price": spec.purchase_price,
+            "residual_value": spec.residual_value,
+            "useful_life_months": spec.useful_life_months,
+            "fuel_type": spec.fuel_type.value,
+            "fuel_consumption_per_hour": spec.fuel_consumption_per_hour,
+            "daily_overhead": spec.daily_overhead,
+            "currency": spec.currency,
+            "registration_number": spec.registration_number,
+            "vehicle_type_id": spec.vehicle_type_id,
+            "vehicle_type_name": spec.vehicle_type_name,
+            "fuel_consumption_mode": spec.fuel_consumption_mode.value,
+            "fuel_consumption_per_100km": spec.fuel_consumption_per_100km,
+            "telematics_object_id": spec.telematics_object_id,
+        }

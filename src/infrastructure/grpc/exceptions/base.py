@@ -11,6 +11,9 @@ from src.domain.equipment.errors import (
     InvalidDataError,
     NotFoundError,
     RentalStateError,
+    TelematicsNotConfiguredError,
+    TelematicsRejectedError,
+    TelematicsUnavailableError,
     VersionConflictError,
 )
 
@@ -29,6 +32,9 @@ class ExceptionStatusMapper:
             (EquipmentUnavailableError, StatusCode.FAILED_PRECONDITION),
             (RentalStateError, StatusCode.FAILED_PRECONDITION),
             (VersionConflictError, StatusCode.ABORTED),
+            (TelematicsNotConfiguredError, StatusCode.FAILED_PRECONDITION),
+            (TelematicsRejectedError, StatusCode.INVALID_ARGUMENT),
+            (TelematicsUnavailableError, StatusCode.UNAVAILABLE),
             (InvalidDataError, StatusCode.INVALID_ARGUMENT),
             (EquipmentDomainError, StatusCode.INVALID_ARGUMENT),
             (UniqueViolationError, StatusCode.ALREADY_EXISTS),
