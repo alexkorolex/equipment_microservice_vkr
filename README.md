@@ -61,7 +61,11 @@ AccrualService (воркер)     завершённые сутки → POST /v1
 | `TELEMATICS_ENCRYPTION_KEY` | — | ключ Fernet для паролей |
 | `FORTMONITOR_BASE_URL` | `https://fort.psmgroup.ru/api/integration/v1/` | адрес API, если у компании не указан свой |
 | `FORTMONITOR_TIMEOUT_SECONDS` | `20` | таймаут запроса |
-| `FORTMONITOR_TRACK_DISTANCE_UNIT` | `km` | единица поля `dst` точки трека (`km` или `m`) |
+
+Скорость берётся из датчика «Скорость», состояние и его длительность — из датчиков
+«Движение» / «Стоянка». Поле `move` объекта — код состояния (1xx — едет, 2xx — стоит), а не
+скорость; по нему состояние определяется, только если датчиков нет. Время FortMonitor — UTC без
+смещения. Пробег — сумма `dst` точек трека, она в метрах (проверено по координатам).
 
 Отказ FortMonitor во входе — `INVALID_ARGUMENT`, недоступность — `UNAVAILABLE`.
 

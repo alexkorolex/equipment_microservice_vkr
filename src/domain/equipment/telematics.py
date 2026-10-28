@@ -67,6 +67,13 @@ class TelematicsUnit:
     address: str = ""
     sensors: tuple[Sensor, ...] = field(default_factory=tuple)
     equipment_id: UUID | None = None
+    # MOVING, PARKED or "" when FortMonitor does not tell; for how long, e.g. "1:39:03".
+    movement: str = ""
+    movement_duration: str = ""
+
+
+MOVING = "moving"
+PARKED = "parked"
 
 
 @dataclass(frozen=True, slots=True)

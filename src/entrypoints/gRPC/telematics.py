@@ -34,6 +34,8 @@ def unit_message(unit: TelematicsUnit) -> pb2.TelematicsUnit:
         speed=unit.speed,
         lastDataAt=unit.last_data_at,
         address=unit.address,
+        movement=unit.movement,
+        movementDuration=unit.movement_duration,
         sensors=[
             pb2.TelematicsSensor(name=sensor.name, value=sensor.value, measuredAt=sensor.measured_at)
             for sensor in unit.sensors

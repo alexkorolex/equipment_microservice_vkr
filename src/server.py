@@ -63,8 +63,7 @@ class EquipmentApplication:
         if settings.encryption_key is None:
             self._logger.warning("TELEMATICS_ENCRYPTION_KEY is not set: FortMonitor is disabled")
         provider = FortMonitorProvider(
-            settings.default_base_url, settings.timeout_seconds, self._logger,
-            settings.track_distance_unit,
+            settings.default_base_url, settings.timeout_seconds, self._logger
         )
         return TelematicsService(
             PostgresTelematicsAccounts(pool), provider, SecretBox(settings.encryption_key),

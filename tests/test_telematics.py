@@ -10,7 +10,11 @@ from typing import Any
 import asyncpg
 import pytest
 from cryptography.fernet import Fernet
-from fort_monitor import FortMonitorAuthenticationError, FortMonitorTransportError
+from fort_monitor import (
+    FortMonitorApiError,
+    FortMonitorAuthenticationError,
+    FortMonitorTransportError,
+)
 
 from src.application.equipment.telematics_service import TelematicsService
 from src.domain.equipment.errors import (
@@ -107,7 +111,9 @@ class FakeFortMonitor:
     error: Exception | None = None
 
     def __init__(self, login: str, password: str, **options: Any) -> None:
-        self.objects = SimpleNamespace(track=self._track)
+        self.objects = SimpleNamespace(
+            track=self._track, get_objects_list=self._objects, full_object_info=self._full
+        )
 
     async def __aenter__(self) -> "FakeFortMonitor":
         if self.error is not None:
@@ -116,6 +122,24 @@ class FakeFortMonitor:
 
     async def __aexit__(self, *args: object) -> None:
         return None
+
+    @staticmethod
+    async def _objects() -> list[Any]:
+        listed = dict(IMEI="86", status=5, lat=55.7, lon=37.6, direction=0.0)
+        return [SimpleNamespace(id=1461, name="ACE", move=111.0, lastData="2026-10-28T07:54:14",
+                                **listed),
+                SimpleNamespace(id=2365, name="SITRAK", move=211.0,
+                                lastData="2026-10-28T07:54:05", **listed)]
+
+    @staticmethod
+    async def _full(oid: int) -> Any:
+        if oid == 2365:
+            raise FortMonitorApiError("object is blocked", status=403)
+        sensors = [SimpleNamespace(name="Движение", val="0:02:43", dt="2026-10-28 07:54:14"),
+                   SimpleNamespace(name="Скорость", val="5.9 км/ч", dt="2026-10-28 07:54:14")]
+        return SimpleNamespace(oid="1461", name="ACE", Name="ACE", IMEI="86", status=5, lat=55.7,
+                               lon=37.6, direction=0.0, move=111.0, dt="2026-10-28 07:54:14",
+                               address="Оренбург", sensors=sensors)
 
     @staticmethod
     async def _track(oid: int, start_time: datetime, finish_time: datetime) -> Any:
@@ -142,12 +166,27 @@ async def test_adapter_maps_library_errors(
         await provider.track(TelematicsCredentials("api", "secret"), 501, at(1), at(2))
 
 
-async def test_adapter_sums_track_distance_in_the_configured_unit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_adapter_sums_track_distance_in_metres(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(fortmonitor, "FortMonitor", FakeFortMonitor)
-    provider = fortmonitor.FortMonitorProvider("https://fm.test/api/", 5, LOGGER, "m")
+    provider = fortmonitor.FortMonitorProvider("https://fm.test/api/", 5, LOGGER)
 
     track = await provider.track(TelematicsCredentials("api", "secret"), 501, at(1), at(2))
 
     assert (track.distance_km, len(track.points)) == (Decimal("2.0"), 2)
+
+
+async def test_adapter_reads_speed_and_state_from_sensors_not_move(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(fortmonitor, "FortMonitor", FakeFortMonitor)
+    monkeypatch.setattr(FakeFortMonitor, "error", None)
+    provider = fortmonitor.FortMonitorProvider("https://fm.test/api/", 5, LOGGER)
+
+    moving, parked = await provider.units(TelematicsCredentials("api", "secret"))
+
+    # "move" is a state code (111, 211), never shown as km/h.
+    assert (moving.movement, moving.movement_duration, moving.speed) == ("moving", "0:02:43", 5.9)
+    assert moving.last_data_at == "2026-10-28T07:54:14"
+    # Its full info failed: the state comes from the code, the speed stays unknown.
+    assert (parked.movement, parked.speed) == ("parked", 0.0)
+
