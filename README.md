@@ -39,8 +39,8 @@ AccrualService (воркер)     завершённые сутки → POST /v1
   расходы помечаются `complete`.
 - Все запросы ограничены `organizationId`; чужой ресурс — `NOT_FOUND`.
 - Госномер (`registrationNumber`) приводится к верхнему регистру и уникален в
-  организации; тип ТС (`vehicleTypeId`, `vehicleTypeName`) — категория каталога
-  ReviewPlatform с флажком «Тип техники для CRM», название подставляет Gateway.
+  организации; тип ТС (`vehicleTypeId`, `vehicleTypeName`) — категория транспортных
+  средств ReviewPlatform (те же, по которым заданы тарифы), название подставляет Gateway.
 - Расход топлива: `fuelConsumptionMode = per_hour` — фиксированный `fuelConsumptionPerHour`
   на моточас смены; `per_100km` — `fuelConsumptionPer100Km` на пробег. Пробег берётся из
   трека FortMonitor, если техника привязана (`telematicsObjectId`), иначе из одометра:
