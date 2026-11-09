@@ -148,3 +148,76 @@ CREATE TABLE IF NOT EXISTS equipment.telematics_accounts (
     updated_by_user_id BIGINT NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Change events for live updates in the CRM (realtime-gateway). Triggers write them
+-- in the transaction of the change itself, from every write path, background workers
+-- included; ChangePublisher sends them to Kafka "crm.changes" and marks them.
+CREATE TABLE IF NOT EXISTS equipment.change_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id BIGINT NOT NULL,
+    entity TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    event TEXT NOT NULL,
+    version BIGINT NULL,
+    -- Who may see the change besides the section's permission (a rental's worker).
+    user_id BIGINT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    published_at TIMESTAMPTZ NULL
+);
+
+CREATE INDEX IF NOT EXISTS change_events_unpublished
+    ON equipment.change_events (occurred_at) WHERE published_at IS NULL;
+
+-- Arguments: entity, organization column, id column[, event suffix ('' for the
+-- operation's)[, column of the user who may see it regardless of permissions]].
+CREATE OR REPLACE FUNCTION equipment.record_change() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    item jsonb := to_jsonb(CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END);
+    suffix text := CASE
+        WHEN TG_NARGS > 3 AND TG_ARGV[3] <> '' THEN TG_ARGV[3]
+        WHEN TG_OP = 'INSERT' THEN 'created'
+        WHEN TG_OP = 'UPDATE' THEN 'updated'
+        ELSE 'deleted'
+    END;
+BEGIN
+    IF TG_OP = 'UPDATE' AND to_jsonb(NEW) = to_jsonb(OLD) THEN
+        RETURN NULL;
+    END IF;
+    INSERT INTO equipment.change_events (
+        organization_id, entity, entity_id, event, version, user_id
+    )
+    VALUES (
+        (item ->> TG_ARGV[1])::bigint,
+        TG_ARGV[0],
+        item ->> TG_ARGV[2],
+        TG_ARGV[0] || '.' || suffix,
+        (item ->> 'version')::bigint,
+        CASE WHEN TG_NARGS > 4 THEN (item ->> TG_ARGV[4])::bigint END
+    );
+    RETURN NULL;
+END $$;
+
+-- Cost accruals have no organization of their own: they change their rental.
+CREATE OR REPLACE FUNCTION equipment.record_accrual_change() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO equipment.change_events (organization_id, entity, entity_id, event, user_id)
+    SELECT r.organization_id, 'rental', r.id::text, 'rental.updated', r.worker_user_id
+    FROM equipment.rentals r
+    WHERE r.id = (CASE WHEN TG_OP = 'DELETE' THEN OLD.rental_id ELSE NEW.rental_id END);
+    RETURN NULL;
+END $$;
+
+CREATE OR REPLACE TRIGGER record_change
+    AFTER INSERT OR UPDATE OR DELETE ON equipment.equipment
+    FOR EACH ROW EXECUTE FUNCTION equipment.record_change('equipment', 'organization_id', 'id');
+
+CREATE OR REPLACE TRIGGER record_change
+    AFTER INSERT OR UPDATE OR DELETE ON equipment.rentals
+    FOR EACH ROW EXECUTE FUNCTION equipment.record_change(
+        'rental', 'organization_id', 'id', '', 'worker_user_id');
+
+CREATE OR REPLACE TRIGGER record_change
+    AFTER INSERT OR UPDATE OR DELETE ON equipment.cost_accruals
+    FOR EACH ROW EXECUTE FUNCTION equipment.record_accrual_change();

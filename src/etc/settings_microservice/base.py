@@ -56,6 +56,9 @@ class Settings:
     cost_system: CostSystemSettings
     workers: WorkerSettings
     telematics: TelematicsSettings
+    # Change events go to Kafka (realtime-gateway); metrics for Prometheus.
+    kafka_bootstrap_servers: str = "kafka:29092"
+    metrics_port: int = 9464
 
 
 class SettingsLoader:
@@ -80,6 +83,10 @@ class SettingsLoader:
             cost_system=self._cost_system(source),
             workers=self._workers(source),
             telematics=self._telematics(source),
+            kafka_bootstrap_servers=(
+                f"{source.value('KAFKA_HOST', 'kafka')}:{source.integer('KAFKA_PORT', 29092)}"
+            ),
+            metrics_port=source.integer("METRICS_PORT", 9464),
         )
 
     def _secrets(self) -> dict[str, object]:

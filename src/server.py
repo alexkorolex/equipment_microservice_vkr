@@ -7,6 +7,7 @@ import signal
 import aiohttp
 import asyncpg
 import grpc
+from faststream.kafka import KafkaBroker
 
 from src.application.equipment.accrual_service import AccrualService
 from src.application.equipment.equipment_service import EquipmentService
@@ -20,6 +21,7 @@ from src.entrypoints.gRPC.telematics import TelematicsGrpcService
 from src.etc.logging.base import LoggingConfigurator
 from src.etc.opentelemetry.base import TelemetryConfigurator
 from src.etc.settings_microservice.base import Settings, SettingsLoader
+from src.infrastructure.changes.publisher import ChangePublisher
 from src.infrastructure.clock import SystemClock
 from src.infrastructure.cost_system.client import HttpCostSystem
 from src.infrastructure.db import Database
@@ -30,6 +32,7 @@ from src.infrastructure.db.repositories.rentals import PostgresRentalRepository
 from src.infrastructure.db.repositories.telematics import PostgresTelematicsAccounts
 from src.infrastructure.grpc.exceptions.base import ExceptionStatusMapper
 from src.infrastructure.grpc.interceptors.base import ErrorInterceptor
+from src.infrastructure.kafka.broker import create_broker, start_metrics_server
 from src.infrastructure.telematics.crypto import SecretBox
 from src.infrastructure.telematics.fortmonitor import FortMonitorProvider
 from src.infrastructure.workers import PeriodicWorker
@@ -49,14 +52,20 @@ class EquipmentApplication:
             cost_system = HttpCostSystem(self._settings.cost_system, session, self._logger)
             telematics = self._telematics(pool)
             server = self._grpc_server(pool, telematics)
-            workers = self._worker_tasks(pool, cost_system, telematics)
-            self._install_signal_handlers(server)
-            await server.start()
-            self._logger.info("Equipment service started", extra={"port": self._settings.port})
-            try:
-                await server.wait_for_termination()
-            finally:
-                await self._shutdown(server, workers)
+            broker = create_broker(
+                self._settings.kafka_bootstrap_servers, self._settings.service_name, self._logger
+            )
+            start_metrics_server(self._settings.metrics_port)
+            async with broker:
+                await broker.start()
+                workers = self._worker_tasks(pool, cost_system, telematics, broker)
+                self._install_signal_handlers(server)
+                await server.start()
+                self._logger.info("Equipment service started", extra={"port": self._settings.port})
+                try:
+                    await server.wait_for_termination()
+                finally:
+                    await self._shutdown(server, workers)
 
     def _telematics(self, pool: asyncpg.Pool) -> TelematicsService:
         settings = self._settings.telematics
@@ -94,7 +103,11 @@ class EquipmentApplication:
         return server
 
     def _worker_tasks(
-        self, pool: asyncpg.Pool, cost_system: HttpCostSystem, telematics: TelematicsService
+        self,
+        pool: asyncpg.Pool,
+        cost_system: HttpCostSystem,
+        telematics: TelematicsService,
+        broker: KafkaBroker,
     ) -> tuple[asyncio.Task[None], ...]:
         settings = self._settings.workers
         submission = SubmissionService(
@@ -110,6 +123,10 @@ class EquipmentApplication:
                            settings.submit_interval_seconds, self._logger),
             PeriodicWorker("cost-accrual", accrual.run_once,
                            settings.accrual_interval_seconds, self._logger),
+            # Live updates: changes reach the CRM within about half a second.
+            PeriodicWorker("change-publisher",
+                           ChangePublisher(pool, broker, "equipment.change_events").run_once,
+                           0.5, self._logger),
         )
         return tuple(
             asyncio.create_task(worker.run(self._stop_event), name=f"equipment-{index}")
