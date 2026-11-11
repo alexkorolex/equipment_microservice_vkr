@@ -8,12 +8,15 @@ committed only after the handler finished.
 from __future__ import annotations
 
 import logging
+import os
 
 from faststream import AckPolicy
 from faststream.kafka import KafkaBroker
 from faststream.kafka.opentelemetry import KafkaTelemetryMiddleware
 from faststream.kafka.prometheus import KafkaPrometheusMiddleware
 from prometheus_client import REGISTRY, start_http_server
+
+from src.infrastructure.kafka.tls import KafkaTlsContextFactory
 
 
 def create_broker(bootstrap_servers: str, service_name: str, logger: logging.Logger) -> KafkaBroker:
@@ -22,6 +25,7 @@ def create_broker(bootstrap_servers: str, service_name: str, logger: logging.Log
     return KafkaBroker(
         bootstrap_servers,
         client_id=service_name,
+        security=KafkaTlsContextFactory(os.environ, logger).build(),
         # A failed message is read again; handlers decide what is worth retrying
         # (see errors.dead_letter_policy).
         ack_policy=AckPolicy.NACK_ON_ERROR,

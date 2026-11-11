@@ -14,6 +14,7 @@ LOGGER = logging.getLogger("equipment-tests")
 
 def ensure_test_env() -> None:
     defaults = {
+        "KAFKA_SECURITY_PROTOCOL": "PLAINTEXT",
         "USE_VAULT": "false",
         "PORT": "50055",
         "DB_HOST": "127.0.0.1",
