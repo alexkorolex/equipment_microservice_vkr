@@ -9,15 +9,20 @@ from src.application.equipment.commands import (
     AccrualCandidate,
     CostCalculation,
     CostCalculationRequest,
+    DispatchQuery,
     EquipmentChanges,
+    LeaseFilter,
     ListQuery,
     OutboxMessage,
     RentalFilter,
 )
 from src.domain.equipment.models import (
+    DispatchEquipment,
     Equipment,
     EquipmentSpec,
     EquipmentStatus,
+    Lease,
+    LeaseRequest,
     Rental,
     RentalCosts,
     RentalRequest,
@@ -79,9 +84,34 @@ class RentalRepository(Protocol):
         rental_id: UUID,
         returned_at: datetime,
         odometer_end: Decimal | None,
+        actor_user_id: int | None = None,
+        close_reason: str = "",
+        forced: bool = False,
     ) -> Rental: ...
 
-    async def cancel(self, organization_id: int, rental_id: UUID, now: datetime) -> Rental: ...
+    async def cancel(
+        self,
+        organization_id: int,
+        rental_id: UUID,
+        now: datetime,
+        actor_user_id: int | None = None,
+    ) -> Rental: ...
+
+
+class LeaseRepository(Protocol):
+    async def create(self, request: LeaseRequest, now: datetime) -> Lease: ...
+
+    async def end(
+        self, lease_id: UUID, actor_user_id: int, reason: str, now: datetime
+    ) -> Lease: ...
+
+    async def get(self, lease_id: UUID) -> Lease: ...
+
+    async def list(self, query: LeaseFilter, now: datetime) -> list[Lease]: ...
+
+
+class DispatchRepository(Protocol):
+    async def list(self, query: DispatchQuery, now: datetime) -> list[DispatchEquipment]: ...
 
 
 class CostRepository(Protocol):

@@ -36,6 +36,7 @@ class EquipmentChanges:
     fuel_consumption_mode: FuelConsumptionMode | None = None
     fuel_consumption_per_100km: Decimal | None = None
     telematics_object_id: int | None = None
+    territory_id: int | None = None
 
     def spec_changes(self) -> dict[str, Any]:
         """Changed spec fields. Empty ``catalog_item_id`` or ``registration_number`` and a
@@ -57,6 +58,7 @@ class EquipmentChanges:
                 ("fuel_consumption_mode", self.fuel_consumption_mode),
                 ("fuel_consumption_per_100km", self.fuel_consumption_per_100km),
                 ("telematics_object_id", self.telematics_object_id),
+                ("territory_id", self.territory_id),
             )
             if value is not None
         }
@@ -65,6 +67,7 @@ class EquipmentChanges:
             ("registration_number", ""),
             ("vehicle_type_id", 0),
             ("telematics_object_id", 0),
+            ("territory_id", 0),
         ):
             if changes.get(name) == empty:
                 changes[name] = None
@@ -86,6 +89,39 @@ class RentalFilter:
     equipment_id: UUID | None
     worker_user_id: int | None
     status: RentalStatus | None
+    limit: int
+    offset: int
+
+
+@dataclass(frozen=True, slots=True)
+class EquipmentSelection:
+    """Units of one organization a dispatcher may see: all, or the listed ones."""
+
+    organization_id: int
+    all_equipment: bool
+    equipment_ids: tuple[UUID, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchQuery:
+    selections: tuple[EquipmentSelection, ...]
+    territory_ids: tuple[int, ...]
+    status: EquipmentStatus | None
+    limit: int
+    offset: int
+
+
+class LeaseSide(StrEnum):
+    OWNER = "owner"
+    LESSEE = "lessee"
+
+
+@dataclass(frozen=True, slots=True)
+class LeaseFilter:
+    organization_id: int | None
+    side: LeaseSide | None
+    equipment_ids: tuple[UUID, ...]
+    current_only: bool
     limit: int
     offset: int
 

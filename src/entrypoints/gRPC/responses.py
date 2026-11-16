@@ -7,7 +7,14 @@ from decimal import Decimal
 
 from google.protobuf.timestamp_pb2 import Timestamp
 
-from src.domain.equipment.models import CostAccrual, Equipment, Rental, RentalCosts
+from src.domain.equipment.models import (
+    CostAccrual,
+    DispatchEquipment,
+    Equipment,
+    Lease,
+    Rental,
+    RentalCosts,
+)
 from src.domains.equipment import equipment_pb2 as pb2
 
 
@@ -52,6 +59,7 @@ def equipment(item: Equipment) -> pb2.Equipment:
         fuelConsumptionMode=spec.fuel_consumption_mode.value,
         fuelConsumptionPer100Km=str(spec.fuel_consumption_per_100km),
         telematicsObjectId=spec.telematics_object_id or 0,
+        territoryId=spec.territory_id or 0,
     )
     if spec.catalog_item_id is not None:
         message.catalogItemId = spec.catalog_item_id
@@ -73,7 +81,13 @@ def rental(item: Rental) -> pb2.Rental:
         externalStatus=item.external_status.value,
         createdAt=ts(item.created_at),
         updatedAt=ts(item.updated_at),
+        ownerOrganizationId=item.owner_organization_id or item.organization_id,
+        closedByUserId=item.closed_by_user_id or 0,
+        closeReason=item.close_reason,
+        forceClosed=item.force_closed,
     )
+    if item.lease_id is not None:
+        message.leaseId = str(item.lease_id)
     if item.returned_at is not None:
         message.returnedAt.CopyFrom(ts(item.returned_at))
     if item.external_reference is not None:
@@ -122,3 +136,35 @@ def costs(item: RentalCosts) -> pb2.RentalCosts:
         accruals=[accrual(entry) for entry in item.accruals],
         complete=item.complete,
     )
+
+
+def lease(item: Lease, now: datetime) -> pb2.Lease:
+    message = pb2.Lease(
+        id=str(item.id),
+        equipmentId=str(item.equipment_id),
+        ownerOrganizationId=item.owner_organization_id,
+        lesseeOrganizationId=item.lessee_organization_id,
+        startsAt=ts(item.starts_at),
+        endsAt=ts(item.ends_at),
+        status=item.status(now).value,
+        note=item.note,
+        createdByUserId=item.created_by_user_id,
+        endedByUserId=item.ended_by_user_id or 0,
+        endReason=item.end_reason,
+        createdAt=ts(item.created_at),
+        updatedAt=ts(item.updated_at),
+    )
+    if item.ended_at is not None:
+        message.endedAt.CopyFrom(ts(item.ended_at))
+    if item.equipment is not None:
+        message.equipment.CopyFrom(equipment(item.equipment))
+    return message
+
+
+def dispatch(item: DispatchEquipment, now: datetime) -> pb2.DispatchEquipment:
+    message = pb2.DispatchEquipment(equipment=equipment(item.equipment))
+    if item.current_rental is not None:
+        message.currentRental.CopyFrom(rental(item.current_rental))
+    if item.active_lease is not None:
+        message.activeLease.CopyFrom(lease(item.active_lease, now))
+    return message

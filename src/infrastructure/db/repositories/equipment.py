@@ -35,8 +35,12 @@ class PostgresEquipmentRepository:
         return equipment_from_row(row)
 
     async def get(self, organization_id: int, equipment_id: UUID) -> Equipment:
+        """The organization's unit, or one ever leased to it (read only: its rentals
+        of the unit refer to it)."""
         row = await self._pool.fetchrow(
-            f"{_SELECT} WHERE e.id = $1 AND e.organization_id = $2",
+            f"""{_SELECT} WHERE e.id = $1 AND (e.organization_id = $2 OR EXISTS (
+                SELECT 1 FROM equipment.leases l
+                WHERE l.equipment_id = e.id AND l.lessee_organization_id = $2))""",
             equipment_id,
             organization_id,
         )
@@ -142,4 +146,5 @@ class PostgresEquipmentRepository:
             "fuel_consumption_mode": spec.fuel_consumption_mode.value,
             "fuel_consumption_per_100km": spec.fuel_consumption_per_100km,
             "telematics_object_id": spec.telematics_object_id,
+            "territory_id": spec.territory_id,
         }

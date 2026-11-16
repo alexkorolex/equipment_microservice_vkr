@@ -22,7 +22,14 @@ from src.cost_system_stub.calculator import CostCalculator
 from src.cost_system_stub.settings import StubSettings, parse_prices
 from src.domains.equipment import equipment_pb2 as pb2
 from src.domains.equipment import equipment_pb2_grpc as pb2_grpc
-from src.entrypoints.gRPC.equipment import EquipmentGrpcService, RentalGrpcService
+from src.application.equipment.lease_service import LeaseService
+from src.entrypoints.gRPC.equipment import (
+    EquipmentGrpcService,
+    LeaseGrpcService,
+    RentalGrpcService,
+)
+from src.infrastructure.db.repositories.dispatch import PostgresDispatchRepository
+from src.infrastructure.db.repositories.leases import PostgresLeaseRepository
 from src.entrypoints.gRPC.requests import RequestMapper
 from src.etc.settings_microservice.base import CostSystemSettings
 from src.infrastructure.cost_system.client import HttpCostSystem
@@ -41,6 +48,7 @@ pytestmark = pytest.mark.integration
 class Harness:
     equipment: pb2_grpc.EquipmentServiceStub
     rentals: pb2_grpc.RentalServiceStub
+    leases: pb2_grpc.LeaseServiceStub
     clock: FixedClock
     submission: SubmissionService
     accrual: AccrualService
@@ -62,10 +70,16 @@ async def harness(pool: asyncpg.Pool) -> AsyncIterator[Harness]:
         cost_system = HttpCostSystem(CostSystemSettings(url, None, 5.0), session, LOGGER)
         server = grpc.aio.server(interceptors=[ErrorInterceptor(LOGGER, ExceptionStatusMapper())])
         requests = RequestMapper(Decimal(8))
+        leases = LeaseService(
+            PostgresLeaseRepository(pool), PostgresDispatchRepository(pool), clock, LOGGER
+        )
         pb2_grpc.add_EquipmentServiceServicer_to_server(
-            EquipmentGrpcService(EquipmentService(PostgresEquipmentRepository(pool), LOGGER), requests),
+            EquipmentGrpcService(
+                EquipmentService(PostgresEquipmentRepository(pool), LOGGER), leases, requests
+            ),
             server,
         )
+        pb2_grpc.add_LeaseServiceServicer_to_server(LeaseGrpcService(leases, requests), server)
         rentals = RentalService(PostgresRentalRepository(pool), PostgresCostRepository(pool), clock, LOGGER)
         pb2_grpc.add_RentalServiceServicer_to_server(RentalGrpcService(rentals, requests), server)
         port = server.add_insecure_port("127.0.0.1:0")
@@ -74,6 +88,7 @@ async def harness(pool: asyncpg.Pool) -> AsyncIterator[Harness]:
             yield Harness(
                 pb2_grpc.EquipmentServiceStub(channel),
                 pb2_grpc.RentalServiceStub(channel),
+                pb2_grpc.LeaseServiceStub(channel),
                 clock,
                 SubmissionService(PostgresOutboxRepository(pool), cost_system, clock, LOGGER, 10, 5),
                 AccrualService(PostgresCostRepository(pool), cost_system, clock, LOGGER, 10),

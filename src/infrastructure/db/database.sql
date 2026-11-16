@@ -149,6 +149,56 @@ CREATE TABLE IF NOT EXISTS equipment.telematics_accounts (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Base territory (dispatcher service): dispatchers of it or of a territory above it
+-- may be given access to the unit.
+ALTER TABLE equipment.equipment ADD COLUMN IF NOT EXISTS territory_id BIGINT NULL;
+CREATE INDEX IF NOT EXISTS equipment_territory_idx
+    ON equipment.equipment (territory_id) WHERE territory_id IS NOT NULL;
+
+-- A dispatcher leases a unit of the owner to another organization for a period.
+-- Leases of one unit never overlap: checked under the unit's row lock.
+CREATE TABLE IF NOT EXISTS equipment.leases (
+    id UUID PRIMARY KEY,
+    equipment_id UUID NOT NULL REFERENCES equipment.equipment (id),
+    owner_organization_id BIGINT NOT NULL,
+    lessee_organization_id BIGINT NOT NULL,
+    starts_at TIMESTAMPTZ NOT NULL,
+    ends_at TIMESTAMPTZ NOT NULL,
+    -- Set when the lease is ended before ends_at.
+    ended_at TIMESTAMPTZ NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_by_user_id BIGINT NOT NULL,
+    ended_by_user_id BIGINT NULL,
+    end_reason TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT leases_period_valid CHECK (ends_at > starts_at),
+    CONSTRAINT leases_other_organization CHECK (lessee_organization_id <> owner_organization_id)
+);
+
+CREATE INDEX IF NOT EXISTS leases_equipment_idx ON equipment.leases (equipment_id, ends_at);
+CREATE INDEX IF NOT EXISTS leases_owner_idx
+    ON equipment.leases (owner_organization_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS leases_lessee_idx
+    ON equipment.leases (lessee_organization_id, created_at DESC);
+
+-- A rental belongs to the worker's organization; the owner of the unit differs
+-- when it is leased, and sees the rental and its costs too.
+ALTER TABLE equipment.rentals ADD COLUMN IF NOT EXISTS owner_organization_id BIGINT NULL;
+UPDATE equipment.rentals SET owner_organization_id = organization_id
+    WHERE owner_organization_id IS NULL;
+ALTER TABLE equipment.rentals ALTER COLUMN owner_organization_id SET NOT NULL;
+ALTER TABLE equipment.rentals
+    ADD COLUMN IF NOT EXISTS lease_id UUID NULL REFERENCES equipment.leases (id);
+-- Who returned or cancelled it; a dispatcher's forced close keeps its reason.
+ALTER TABLE equipment.rentals ADD COLUMN IF NOT EXISTS closed_by_user_id BIGINT NULL;
+ALTER TABLE equipment.rentals ADD COLUMN IF NOT EXISTS close_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE equipment.rentals
+    ADD COLUMN IF NOT EXISTS force_closed BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS rentals_owner_idx
+    ON equipment.rentals (owner_organization_id, created_at DESC)
+    WHERE owner_organization_id <> organization_id;
+
 -- Change events for live updates in the CRM (realtime-gateway). Triggers write them
 -- in the transaction of the change itself, from every write path, background workers
 -- included; ChangePublisher sends them to Kafka "crm.changes" and marks them.
@@ -198,14 +248,42 @@ BEGIN
     RETURN NULL;
 END $$;
 
--- Cost accruals have no organization of their own: they change their rental.
+-- Cost accruals have no organization of their own: they change their rental, which
+-- the worker's organization and the owner of a leased unit both see.
 CREATE OR REPLACE FUNCTION equipment.record_accrual_change() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
     INSERT INTO equipment.change_events (organization_id, entity, entity_id, event, user_id)
-    SELECT r.organization_id, 'rental', r.id::text, 'rental.updated', r.worker_user_id
+    SELECT DISTINCT o.id, 'rental', r.id::text, 'rental.updated', r.worker_user_id
     FROM equipment.rentals r
+    CROSS JOIN LATERAL unnest(ARRAY[r.organization_id, r.owner_organization_id]) AS o (id)
     WHERE r.id = (CASE WHEN TG_OP = 'DELETE' THEN OLD.rental_id ELSE NEW.rental_id END);
+    RETURN NULL;
+END $$;
+
+-- A change seen by two organizations: the arguments are the entity, the two
+-- organization columns and the id column[, the column of a user who may see it].
+CREATE OR REPLACE FUNCTION equipment.record_shared_change() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    item jsonb := to_jsonb(CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END);
+    suffix text := CASE
+        WHEN TG_OP = 'INSERT' THEN 'created'
+        WHEN TG_OP = 'UPDATE' THEN 'updated'
+        ELSE 'deleted'
+    END;
+BEGIN
+    IF TG_OP = 'UPDATE' AND to_jsonb(NEW) = to_jsonb(OLD) THEN
+        RETURN NULL;
+    END IF;
+    INSERT INTO equipment.change_events (
+        organization_id, entity, entity_id, event, version, user_id
+    )
+    SELECT DISTINCT o.id, TG_ARGV[0], item ->> TG_ARGV[3], TG_ARGV[0] || '.' || suffix,
+        (item ->> 'version')::bigint,
+        CASE WHEN TG_NARGS > 4 THEN (item ->> TG_ARGV[4])::bigint END
+    FROM unnest(ARRAY[(item ->> TG_ARGV[1])::bigint, (item ->> TG_ARGV[2])::bigint]) AS o (id)
+    WHERE o.id IS NOT NULL;
     RETURN NULL;
 END $$;
 
@@ -215,8 +293,13 @@ CREATE OR REPLACE TRIGGER record_change
 
 CREATE OR REPLACE TRIGGER record_change
     AFTER INSERT OR UPDATE OR DELETE ON equipment.rentals
-    FOR EACH ROW EXECUTE FUNCTION equipment.record_change(
-        'rental', 'organization_id', 'id', '', 'worker_user_id');
+    FOR EACH ROW EXECUTE FUNCTION equipment.record_shared_change(
+        'rental', 'organization_id', 'owner_organization_id', 'id', 'worker_user_id');
+
+CREATE OR REPLACE TRIGGER record_change
+    AFTER INSERT OR UPDATE OR DELETE ON equipment.leases
+    FOR EACH ROW EXECUTE FUNCTION equipment.record_shared_change(
+        'lease', 'owner_organization_id', 'lessee_organization_id', 'id');
 
 CREATE OR REPLACE TRIGGER record_change
     AFTER INSERT OR UPDATE OR DELETE ON equipment.cost_accruals

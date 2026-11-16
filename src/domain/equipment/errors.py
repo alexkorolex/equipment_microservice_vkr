@@ -18,6 +18,10 @@ class RentalStateError(EquipmentDomainError):
     """The rental is in a state that does not allow the action."""
 
 
+class LeaseStateError(EquipmentDomainError):
+    """The lease cannot be made or ended: overlaps, open rentals, already ended."""
+
+
 class VersionConflictError(EquipmentDomainError):
     """``expectedVersion`` does not match the stored version."""
 

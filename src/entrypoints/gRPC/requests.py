@@ -10,13 +10,22 @@ from uuid import UUID
 
 from google.protobuf.message import Message
 
-from src.application.equipment.commands import EquipmentChanges, ListQuery, RentalFilter
+from src.application.equipment.commands import (
+    DispatchQuery,
+    EquipmentChanges,
+    EquipmentSelection,
+    LeaseFilter,
+    LeaseSide,
+    ListQuery,
+    RentalFilter,
+)
 from src.domain.equipment.errors import InvalidDataError
 from src.domain.equipment.models import (
     EquipmentSpec,
     EquipmentStatus,
     FuelConsumptionMode,
     FuelType,
+    LeaseRequest,
     RentalRequest,
     RentalStatus,
     normalize_plate,
@@ -59,6 +68,7 @@ class RequestMapper:
                 request.fuelConsumptionPer100Km or "0", "fuelConsumptionPer100Km"
             ),
             telematics_object_id=request.telematicsObjectId or None,
+            territory_id=request.territoryId or None,
         )
 
     def changes(self, request: pb2.UpdateEquipmentRequest) -> EquipmentChanges:
@@ -95,6 +105,7 @@ class RequestMapper:
             ),
             fuel_consumption_per_100km=decimals["fuelConsumptionPer100Km"],
             telematics_object_id=present("telematicsObjectId"),
+            territory_id=present("territoryId"),
         )
 
     def rental(self, request: pb2.CreateRentalRequest) -> RentalRequest:
@@ -122,6 +133,58 @@ class RequestMapper:
             limit=query.limit,
             offset=query.offset,
         )
+
+    def lease(self, request: pb2.CreateLeaseRequest, now: datetime) -> LeaseRequest:
+        return LeaseRequest(
+            equipment_id=identifier(request.equipmentId, "equipmentId"),
+            owner_organization_id=request.ownerOrganizationId,
+            lessee_organization_id=request.lesseeOrganizationId,
+            starts_at=optional_timestamp(request, "startsAt") or now,
+            ends_at=timestamp(request, "endsAt"),
+            note=request.note.strip(),
+            created_by_user_id=request.createdByUserId,
+        )
+
+    def lease_filter(self, request: pb2.ListLeasesRequest) -> LeaseFilter:
+        limit, offset = self._limits(request.limit, request.offset)
+        ids = [*request.equipmentIds]
+        if request.HasField("equipmentId"):
+            ids.append(request.equipmentId)
+        return LeaseFilter(
+            organization_id=request.organizationId or None,
+            side=enum(LeaseSide, request.side, "side") if request.HasField("side") else None,
+            equipment_ids=tuple(identifier(item, "equipmentId") for item in ids),
+            current_only=request.currentOnly,
+            limit=limit,
+            offset=offset,
+        )
+
+    def dispatch_query(self, request: pb2.ListDispatchEquipmentRequest) -> DispatchQuery:
+        limit, offset = self._limits(request.limit, request.offset)
+        selections = tuple(
+            EquipmentSelection(
+                organization_id=self.organization(item.organizationId),
+                all_equipment=item.allEquipment,
+                equipment_ids=tuple(
+                    identifier(value, "equipmentIds") for value in item.equipmentIds
+                ),
+            )
+            for item in request.selections
+        )
+        return DispatchQuery(
+            selections=selections,
+            territory_ids=tuple(request.territoryIds),
+            status=enum(EquipmentStatus, request.status, "status")
+            if request.HasField("status") else None,
+            limit=limit,
+            offset=offset,
+        )
+
+    @staticmethod
+    def _limits(limit: int, offset: int) -> tuple[int, int]:
+        if limit < 0 or offset < 0:
+            raise InvalidDataError("limit and offset must not be negative")
+        return min(limit or DEFAULT_LIMIT, MAX_LIMIT), offset
 
     def page(self, organization_id: int, limit: int, offset: int) -> ListQuery:
         if limit < 0 or offset < 0:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from src.application.equipment.equipment_service import EquipmentService
+from src.application.equipment.lease_service import LeaseService
 from src.application.equipment.rental_service import RentalService
 from src.domain.equipment.models import EquipmentStatus
 from src.domains.equipment import equipment_pb2 as pb2
@@ -16,8 +17,11 @@ from src.entrypoints.gRPC.requests import (
 
 
 class EquipmentGrpcService(pb2_grpc.EquipmentServiceServicer):
-    def __init__(self, service: EquipmentService, requests: RequestMapper) -> None:
+    def __init__(
+        self, service: EquipmentService, leases: LeaseService, requests: RequestMapper
+    ) -> None:
         self._service = service
+        self._leases = leases
         self._requests = requests
 
     async def CreateEquipment(
@@ -54,6 +58,15 @@ class EquipmentGrpcService(pb2_grpc.EquipmentServiceServicer):
         )
         return pb2.EquipmentListResponse(data=[responses.equipment(item) for item in items])
 
+    async def ListDispatchEquipment(
+        self, request: pb2.ListDispatchEquipmentRequest, context: object
+    ) -> pb2.DispatchEquipmentListResponse:
+        items = await self._leases.dispatch(self._requests.dispatch_query(request))
+        now = self._leases.now
+        return pb2.DispatchEquipmentListResponse(
+            data=[responses.dispatch(item, now) for item in items]
+        )
+
 
 class RentalGrpcService(pb2_grpc.RentalServiceServicer):
     def __init__(self, service: RentalService, requests: RequestMapper) -> None:
@@ -87,6 +100,8 @@ class RentalGrpcService(pb2_grpc.RentalServiceServicer):
             optional_timestamp(request, "returnedAt"),
             request.actorUserId,
             optional_decimal(request, "odometerEnd"),
+            forced=request.forced,
+            close_reason=request.closeReason,
         )
         return pb2.RentalResponse(data=responses.rental(rental))
 
@@ -109,3 +124,32 @@ class RentalGrpcService(pb2_grpc.RentalServiceServicer):
         )
         return pb2.RentalCostsResponse(data=responses.costs(costs))
 
+
+
+class LeaseGrpcService(pb2_grpc.LeaseServiceServicer):
+    def __init__(self, service: LeaseService, requests: RequestMapper) -> None:
+        self._service = service
+        self._requests = requests
+
+    async def CreateLease(
+        self, request: pb2.CreateLeaseRequest, context: object
+    ) -> pb2.LeaseResponse:
+        lease = await self._service.create(self._requests.lease(request, self._service.now))
+        return pb2.LeaseResponse(data=responses.lease(lease, self._service.now))
+
+    async def EndLease(self, request: pb2.EndLeaseRequest, context: object) -> pb2.LeaseResponse:
+        lease = await self._service.end(
+            identifier(request.id, "id"), request.actorUserId, request.reason
+        )
+        return pb2.LeaseResponse(data=responses.lease(lease, self._service.now))
+
+    async def GetLease(self, request: pb2.GetLeaseRequest, context: object) -> pb2.LeaseResponse:
+        lease = await self._service.get(identifier(request.id, "id"))
+        return pb2.LeaseResponse(data=responses.lease(lease, self._service.now))
+
+    async def ListLeases(
+        self, request: pb2.ListLeasesRequest, context: object
+    ) -> pb2.LeaseListResponse:
+        leases = await self._service.list(self._requests.lease_filter(request))
+        now = self._service.now
+        return pb2.LeaseListResponse(data=[responses.lease(item, now) for item in leases])

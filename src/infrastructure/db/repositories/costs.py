@@ -46,7 +46,7 @@ class PostgresCostRepository:
             rental = await connection.fetchrow(
                 """SELECT r.costs_complete, e.currency FROM equipment.rentals r
                 JOIN equipment.equipment e ON e.id = r.equipment_id
-                WHERE r.id = $1 AND r.organization_id = $2""",
+                WHERE r.id = $1 AND $2 IN (r.organization_id, r.owner_organization_id)""",
                 rental_id,
                 organization_id,
             )

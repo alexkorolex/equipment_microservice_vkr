@@ -73,6 +73,7 @@ class EquipmentSpec:
     fuel_consumption_mode: FuelConsumptionMode = FuelConsumptionMode.PER_HOUR
     fuel_consumption_per_100km: Decimal = Decimal(0)
     telematics_object_id: int | None = None
+    territory_id: int | None = None
 
     _CURRENCY: ClassVar[re.Pattern[str]] = re.compile(r"^[A-Z]{3}$")
     # Russian plates and trailer/special machinery numbers: letters, digits, spaces, dashes.
@@ -103,6 +104,8 @@ class EquipmentSpec:
             raise InvalidDataError("fuelConsumptionPer100Km must not be negative")
         if self.telematics_object_id is not None and self.telematics_object_id < 1:
             raise InvalidDataError("telematicsObjectId must be positive")
+        if self.territory_id is not None and self.territory_id < 1:
+            raise InvalidDataError("territoryId must be positive")
 
     @property
     def mileage_from_odometer(self) -> bool:
@@ -181,6 +184,80 @@ class Rental:
     updated_at: datetime
     odometer_start: Decimal | None = None
     odometer_end: Decimal | None = None
+    # The unit's owner; differs from organization_id for a leased unit.
+    owner_organization_id: int = 0
+    lease_id: UUID | None = None
+    closed_by_user_id: int | None = None
+    close_reason: str = ""
+    force_closed: bool = False
+
+
+class LeaseStatus(StrEnum):
+    SCHEDULED = "scheduled"
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    ENDED = "ended"
+
+
+@dataclass(frozen=True, slots=True)
+class LeaseRequest:
+    equipment_id: UUID
+    owner_organization_id: int
+    lessee_organization_id: int
+    starts_at: datetime
+    ends_at: datetime
+    note: str
+    created_by_user_id: int
+
+    def __post_init__(self) -> None:
+        require_aware(self.starts_at, "startsAt")
+        require_aware(self.ends_at, "endsAt")
+        if self.ends_at <= self.starts_at:
+            raise InvalidDataError("endsAt must be after startsAt")
+        if min(self.owner_organization_id, self.lessee_organization_id) < 1:
+            raise InvalidDataError("ownerOrganizationId and lesseeOrganizationId are required")
+        if self.owner_organization_id == self.lessee_organization_id:
+            raise InvalidDataError("The lessee must be another organization")
+        if len(self.note) > 1000:
+            raise InvalidDataError("note is too long")
+        if self.created_by_user_id < 1:
+            raise InvalidDataError("createdByUserId is required")
+
+
+@dataclass(frozen=True, slots=True)
+class Lease:
+    id: UUID
+    equipment_id: UUID
+    owner_organization_id: int
+    lessee_organization_id: int
+    starts_at: datetime
+    ends_at: datetime
+    ended_at: datetime | None
+    note: str
+    created_by_user_id: int
+    ended_by_user_id: int | None
+    end_reason: str
+    created_at: datetime
+    updated_at: datetime
+    equipment: Equipment | None = None
+
+    def status(self, now: datetime) -> LeaseStatus:
+        if self.ended_at is not None:
+            return LeaseStatus.ENDED
+        if now >= self.ends_at:
+            return LeaseStatus.EXPIRED
+        if now < self.starts_at:
+            return LeaseStatus.SCHEDULED
+        return LeaseStatus.ACTIVE
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchEquipment:
+    """A unit with the open rental holding it and the lease in force or next."""
+
+    equipment: Equipment
+    current_rental: Rental | None
+    active_lease: Lease | None
 
 
 @dataclass(frozen=True, slots=True)

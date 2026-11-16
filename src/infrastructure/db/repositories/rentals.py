@@ -32,12 +32,22 @@ from src.infrastructure.db.repositories.mappers import (
 
 _SELECT = f"SELECT {RENTAL_COLUMNS} FROM equipment.rentals r"
 
+# The worker's organization or, for a leased unit, its owner.
+_VISIBLE = "$2 IN (r.organization_id, r.owner_organization_id)"
+
 # An open rental holds the equipment until it comes back, even past its planned end.
 _OVERLAP = """
     SELECT 1 FROM equipment.rentals
     WHERE equipment_id = $1 AND status = 'open'
       AND starts_at < $3 AND GREATEST(ends_at, $4) > $2
     LIMIT 1
+"""
+
+# Leases of the unit not ended early that overlap the period.
+_LEASED = """
+    SELECT id, lessee_organization_id, starts_at, ends_at FROM equipment.leases
+    WHERE equipment_id = $1 AND ended_at IS NULL AND starts_at < $3 AND ends_at > $2
+    ORDER BY starts_at
 """
 
 
@@ -49,6 +59,7 @@ class PostgresRentalRepository:
     async def open(self, request: RentalRequest, now: datetime) -> Rental:
         async with self._pool.acquire() as connection, connection.transaction():
             equipment = await self._lock_equipment(connection, request)
+            lease_id = await self._lease_for(connection, request, int(equipment["organization_id"]))
             if spec_from_row(equipment).mileage_from_odometer and request.odometer_start is None:
                 raise InvalidDataError("odometerStart is required: fuel is counted by mileage")
             busy = await connection.fetchval(
@@ -56,7 +67,9 @@ class PostgresRentalRepository:
             )
             if busy:
                 raise EquipmentUnavailableError("Equipment is already rented for this period")
-            row = await self._insert(connection, request)
+            row = await self._insert(
+                connection, request, int(equipment["organization_id"]), lease_id
+            )
             rental = rental_from_row(row)
             await self._enqueue(connection, rental, OutboxKind.RENTAL_OPENED, {
                 **self._rental_payload(rental),
@@ -71,7 +84,7 @@ class PostgresRentalRepository:
 
     async def get(self, organization_id: int, rental_id: UUID) -> Rental:
         row = await self._pool.fetchrow(
-            f"{_SELECT} WHERE r.id = $1 AND r.organization_id = $2", rental_id, organization_id
+            f"{_SELECT} WHERE r.id = $1 AND {_VISIBLE}", rental_id, organization_id
         )
         if row is None:
             raise NotFoundError("Rental not found")
@@ -80,7 +93,8 @@ class PostgresRentalRepository:
     async def list(self, query: RentalFilter) -> list[Rental]:
         rows = await self._pool.fetch(
             f"""{_SELECT}
-            WHERE r.organization_id = $1
+            WHERE (r.organization_id = $1
+                   OR (r.owner_organization_id = $1 AND r.owner_organization_id <> r.organization_id))
               AND ($2::uuid IS NULL OR r.equipment_id = $2)
               AND ($3::bigint IS NULL OR r.worker_user_id = $3)
               AND ($4::text IS NULL OR r.status = $4)
@@ -100,6 +114,9 @@ class PostgresRentalRepository:
         rental_id: UUID,
         returned_at: datetime,
         odometer_end: Decimal | None,
+        actor_user_id: int | None = None,
+        close_reason: str = "",
+        forced: bool = False,
     ) -> Rental:
         async with self._pool.acquire() as connection, connection.transaction():
             rental = await self._lock_open(connection, organization_id, rental_id)
@@ -113,21 +130,30 @@ class PostgresRentalRepository:
             if accrued_until is not None and returned_at < accrued_until:
                 raise RentalStateError("Costs are already accrued past this return time")
             updated = await self._set_status(
-                connection, rental_id, RentalStatus.RETURNED, returned_at, odometer_end
+                connection, rental_id, RentalStatus.RETURNED, returned_at, odometer_end,
+                closed_by_user_id=actor_user_id, close_reason=close_reason, forced=forced,
             )
             await self._enqueue(connection, updated, OutboxKind.RENTAL_RETURNED, {
                 **self._rental_payload(updated),
                 "returnedAt": returned_at.isoformat(),
+                "forceClosed": forced,
             })
         return updated
 
-    async def cancel(self, organization_id: int, rental_id: UUID, now: datetime) -> Rental:
+    async def cancel(
+        self,
+        organization_id: int,
+        rental_id: UUID,
+        now: datetime,
+        actor_user_id: int | None = None,
+    ) -> Rental:
         async with self._pool.acquire() as connection, connection.transaction():
             rental = await self._lock_open(connection, organization_id, rental_id)
             if rental.starts_at <= now:
                 raise RentalStateError("The rental has already started: return the equipment")
             updated = await self._set_status(
-                connection, rental_id, RentalStatus.CANCELLED, None, None
+                connection, rental_id, RentalStatus.CANCELLED, None, None,
+                closed_by_user_id=actor_user_id,
             )
             await self._enqueue(
                 connection, updated, OutboxKind.RENTAL_CANCELLED, self._rental_payload(updated)
@@ -136,9 +162,14 @@ class PostgresRentalRepository:
 
     @staticmethod
     async def _lock_equipment(connection: asyncpg.Connection, request: RentalRequest) -> Row:
+        """The unit of the organization, or one leased to it (checked by ``_lease_for``)."""
         row: Row | None = await connection.fetchrow(
             f"""SELECT {EQUIPMENT_COLUMNS} FROM equipment.equipment e
-            WHERE e.id = $1 AND e.organization_id = $2 FOR UPDATE""",
+            WHERE e.id = $1 AND (e.organization_id = $2 OR EXISTS (
+                SELECT 1 FROM equipment.leases l
+                WHERE l.equipment_id = e.id AND l.lessee_organization_id = $2
+                  AND l.ended_at IS NULL))
+            FOR UPDATE OF e""",
             request.equipment_id,
             request.organization_id,
         )
@@ -148,13 +179,43 @@ class PostgresRentalRepository:
             raise EquipmentUnavailableError(f"Equipment is {row['status']}")
         return row
 
-    async def _insert(self, connection: asyncpg.Connection, request: RentalRequest) -> Row:
+    @staticmethod
+    async def _lease_for(
+        connection: asyncpg.Connection, request: RentalRequest, owner_id: int
+    ) -> UUID | None:
+        """The lease the rental of a lessee falls in; the owner may not rent a leased unit."""
+        leases = await connection.fetch(
+            _LEASED, request.equipment_id, request.starts_at, request.ends_at
+        )
+        if owner_id == request.organization_id:
+            if leases:
+                raise EquipmentUnavailableError(
+                    "The unit is leased to another organization for this period"
+                )
+            return None
+        for lease in leases:
+            if (
+                lease["lessee_organization_id"] == request.organization_id
+                and lease["starts_at"] <= request.starts_at
+                and request.ends_at <= lease["ends_at"]
+            ):
+                return lease["id"]  # type: ignore[no-any-return]
+        raise EquipmentUnavailableError("The rental must fit within the lease period")
+
+    async def _insert(
+        self,
+        connection: asyncpg.Connection,
+        request: RentalRequest,
+        owner_id: int,
+        lease_id: UUID | None,
+    ) -> Row:
         row: Row = await connection.fetchrow(
             """
             INSERT INTO equipment.rentals AS r (
                 id, organization_id, equipment_id, worker_user_id, starts_at, ends_at,
-                status, shift_hours_per_day, purpose, created_by_user_id, odometer_start
-            ) VALUES ($1, $2, $3, $4, $5, $6, 'open', $7, $8, $9, $10)
+                status, shift_hours_per_day, purpose, created_by_user_id, odometer_start,
+                owner_organization_id, lease_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, 'open', $7, $8, $9, $10, $11, $12)
             RETURNING """
             + RENTAL_COLUMNS,
             self._id_factory(),
@@ -167,6 +228,8 @@ class PostgresRentalRepository:
             request.purpose,
             request.created_by_user_id,
             request.odometer_start,
+            owner_id,
+            lease_id,
         )
         return row
 
@@ -175,7 +238,7 @@ class PostgresRentalRepository:
         connection: asyncpg.Connection, organization_id: int, rental_id: UUID
     ) -> Rental:
         row = await connection.fetchrow(
-            f"{_SELECT} WHERE r.id = $1 AND r.organization_id = $2 FOR UPDATE",
+            f"{_SELECT} WHERE r.id = $1 AND {_VISIBLE} FOR UPDATE",
             rental_id,
             organization_id,
         )
@@ -207,16 +270,24 @@ class PostgresRentalRepository:
         status: RentalStatus,
         returned_at: datetime | None,
         odometer_end: Decimal | None,
+        *,
+        closed_by_user_id: int | None = None,
+        close_reason: str = "",
+        forced: bool = False,
     ) -> Rental:
         row = await connection.fetchrow(
             """UPDATE equipment.rentals AS r
-            SET status = $2, returned_at = $3, odometer_end = $4, updated_at = now()
+            SET status = $2, returned_at = $3, odometer_end = $4, closed_by_user_id = $5,
+                close_reason = $6, force_closed = $7, updated_at = now()
             WHERE r.id = $1 RETURNING """
             + RENTAL_COLUMNS,
             rental_id,
             status.value,
             returned_at,
             odometer_end,
+            closed_by_user_id,
+            close_reason,
+            forced,
         )
         return rental_from_row(row)
 
@@ -241,6 +312,7 @@ class PostgresRentalRepository:
         return {
             "rentalId": str(rental.id),
             "organizationId": rental.organization_id,
+            "ownerOrganizationId": rental.owner_organization_id,
             "workerUserId": rental.worker_user_id,
             "startsAt": rental.starts_at.isoformat(),
             "endsAt": rental.ends_at.isoformat(),

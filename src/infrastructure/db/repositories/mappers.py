@@ -12,6 +12,7 @@ from src.domain.equipment.models import (
     ExternalStatus,
     FuelConsumptionMode,
     FuelType,
+    Lease,
     Rental,
     RentalStatus,
 )
@@ -24,14 +25,21 @@ EQUIPMENT_COLUMNS = """
     e.fuel_consumption_per_hour, e.daily_overhead, e.currency, e.status, e.version,
     e.created_at, e.updated_at, e.registration_number, e.vehicle_type_id,
     e.vehicle_type_name, e.fuel_consumption_mode, e.fuel_consumption_per_100km,
-    e.telematics_object_id
+    e.telematics_object_id, e.territory_id
 """
 
 RENTAL_COLUMNS = """
     r.id, r.organization_id, r.equipment_id, r.worker_user_id, r.starts_at, r.ends_at,
     r.returned_at, r.status, r.shift_hours_per_day, r.purpose, r.created_by_user_id,
     r.external_status, r.external_reference, r.created_at, r.updated_at,
-    r.odometer_start, r.odometer_end
+    r.odometer_start, r.odometer_end, r.owner_organization_id, r.lease_id,
+    r.closed_by_user_id, r.close_reason, r.force_closed
+"""
+
+LEASE_COLUMNS = """
+    l.id, l.equipment_id, l.owner_organization_id, l.lessee_organization_id, l.starts_at,
+    l.ends_at, l.ended_at, l.note, l.created_by_user_id, l.ended_by_user_id, l.end_reason,
+    l.created_at, l.updated_at
 """
 
 
@@ -54,6 +62,7 @@ def spec_from_row(row: Row) -> EquipmentSpec:
         fuel_consumption_mode=FuelConsumptionMode(row["fuel_consumption_mode"]),
         fuel_consumption_per_100km=row["fuel_consumption_per_100km"],
         telematics_object_id=row["telematics_object_id"],
+        territory_id=row["territory_id"],
     )
 
 
@@ -87,6 +96,30 @@ def rental_from_row(row: Row) -> Rental:
         updated_at=row["updated_at"],
         odometer_start=row["odometer_start"],
         odometer_end=row["odometer_end"],
+        owner_organization_id=int(row["owner_organization_id"]),
+        lease_id=row["lease_id"],
+        closed_by_user_id=row["closed_by_user_id"],
+        close_reason=row["close_reason"],
+        force_closed=bool(row["force_closed"]),
+    )
+
+
+def lease_from_row(row: Row, equipment: Equipment | None = None) -> Lease:
+    return Lease(
+        id=row["id"],
+        equipment_id=row["equipment_id"],
+        owner_organization_id=int(row["owner_organization_id"]),
+        lessee_organization_id=int(row["lessee_organization_id"]),
+        starts_at=row["starts_at"],
+        ends_at=row["ends_at"],
+        ended_at=row["ended_at"],
+        note=row["note"],
+        created_by_user_id=int(row["created_by_user_id"]),
+        ended_by_user_id=row["ended_by_user_id"],
+        end_reason=row["end_reason"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        equipment=equipment,
     )
 
 

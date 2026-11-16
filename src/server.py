@@ -11,11 +11,16 @@ from faststream.kafka import KafkaBroker
 
 from src.application.equipment.accrual_service import AccrualService
 from src.application.equipment.equipment_service import EquipmentService
+from src.application.equipment.lease_service import LeaseService
 from src.application.equipment.rental_service import RentalService
 from src.application.equipment.submission_service import SubmissionService
 from src.application.equipment.telematics_service import TelematicsService
 from src.domains.equipment import equipment_pb2_grpc
-from src.entrypoints.gRPC.equipment import EquipmentGrpcService, RentalGrpcService
+from src.entrypoints.gRPC.equipment import (
+    EquipmentGrpcService,
+    LeaseGrpcService,
+    RentalGrpcService,
+)
 from src.entrypoints.gRPC.requests import RequestMapper
 from src.entrypoints.gRPC.telematics import TelematicsGrpcService
 from src.etc.logging.base import LoggingConfigurator
@@ -26,7 +31,9 @@ from src.infrastructure.clock import SystemClock
 from src.infrastructure.cost_system.client import HttpCostSystem
 from src.infrastructure.db import Database
 from src.infrastructure.db.repositories.costs import PostgresCostRepository
+from src.infrastructure.db.repositories.dispatch import PostgresDispatchRepository
 from src.infrastructure.db.repositories.equipment import PostgresEquipmentRepository
+from src.infrastructure.db.repositories.leases import PostgresLeaseRepository
 from src.infrastructure.db.repositories.outbox import PostgresOutboxRepository
 from src.infrastructure.db.repositories.rentals import PostgresRentalRepository
 from src.infrastructure.db.repositories.telematics import PostgresTelematicsAccounts
@@ -84,15 +91,23 @@ class EquipmentApplication:
         rentals = RentalService(
             PostgresRentalRepository(pool), PostgresCostRepository(pool), self._clock, self._logger
         )
+        leases = LeaseService(
+            PostgresLeaseRepository(pool), PostgresDispatchRepository(pool), self._clock,
+            self._logger,
+        )
         server = grpc.aio.server(
             interceptors=[ErrorInterceptor(self._logger, ExceptionStatusMapper())]
         )
         server.add_insecure_port(f"[::]:{self._settings.port}")
         equipment_pb2_grpc.add_EquipmentServiceServicer_to_server(
             EquipmentGrpcService(
-                EquipmentService(PostgresEquipmentRepository(pool), self._logger), requests
+                EquipmentService(PostgresEquipmentRepository(pool), self._logger), leases,
+                requests,
             ),
             server,
+        )
+        equipment_pb2_grpc.add_LeaseServiceServicer_to_server(
+            LeaseGrpcService(leases, requests), server
         )
         equipment_pb2_grpc.add_RentalServiceServicer_to_server(
             RentalGrpcService(rentals, requests), server
